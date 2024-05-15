@@ -3,15 +3,22 @@
 
 # COMMAND ----------
 
-# MAGIC %md ### Move to utils folder
-
-# COMMAND ----------
-
 # MAGIC %pip install kaggle
 
 # COMMAND ----------
 
 # MAGIC %run ./notebook_config
+
+# COMMAND ----------
+
+spark.sql(f'CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}')
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {config['volumes_table_path']}")
+
+# COMMAND ----------
+
+# MAGIC %md Create Kaggle username and token to download dataset then setup secret and scope in Databricks using Databricks CLI (script below):
+# MAGIC
+# MAGIC `databricks secrets put-secret <scope_name> <key_name>`
 
 # COMMAND ----------
 
@@ -22,7 +29,7 @@ os.environ['kaggle_key'] = dbutils.secrets.get("solution-accelerator-cicd", "kag
 
 # COMMAND ----------
 
-# MAGIC %md ### Download data from Kaggle and unzip csv files to Databricks driver
+# MAGIC %md Download data from Kaggle and unzip csv files to Databricks driver
 
 # COMMAND ----------
 
@@ -47,13 +54,12 @@ os.environ['kaggle_key'] = dbutils.secrets.get("solution-accelerator-cicd", "kag
 
 # COMMAND ----------
 
-# MAGIC %md ### Move the downloaded data to UC Volumes which will be used throughout the accelerator
+# MAGIC %md Move the downloaded data to UC Volumes which will be used throughout the accelerator
 
 # COMMAND ----------
 
 import os
 
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {config['volumes_table_path']}")
 dbutils.fs.mv("file:/databricks/driver/aisles.csv", 
               f"{config['volumes_path']}/aisles/aisles.csv")
 print(f"Moving aisles.csv to {config['volumes_path']}/aisles/aisles.csv")
