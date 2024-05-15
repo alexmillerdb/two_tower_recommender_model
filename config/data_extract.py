@@ -11,23 +11,14 @@
 
 # COMMAND ----------
 
+# MAGIC %run ./notebook_config
+
+# COMMAND ----------
+
 import os
 # os.environ['kaggle_username'] = 'YOUR KAGGLE USERNAME HERE' # replace with your own credential here temporarily or set up a secret scope with your credential
 os.environ['kaggle_username'] = dbutils.secrets.get("solution-accelerator-cicd", "kaggle_username_am")
 os.environ['kaggle_key'] = dbutils.secrets.get("solution-accelerator-cicd", "kaggle_key_am")
-
-# COMMAND ----------
-
-catalog = "main"
-schema = "alex_m"
-volume = "instacart_data"
-
-config = {}
-config['catalog'] = catalog
-config['schema'] = schema
-config['volume'] = volume
-config['volumes_path'] = f"/Volumes/{catalog}/{schema}/{volume}"
-config['volumes_table_path'] = f"{catalog}.{schema}.{volume}"
 
 # COMMAND ----------
 
