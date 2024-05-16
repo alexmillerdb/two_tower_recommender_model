@@ -1,9 +1,4 @@
 # Databricks notebook source
-# MAGIC %pip install -q mosaicml-streaming
-# MAGIC dbutils.library.restartPython()
-
-# COMMAND ----------
-
 # MAGIC %run ./config/notebook_config
 
 # COMMAND ----------
