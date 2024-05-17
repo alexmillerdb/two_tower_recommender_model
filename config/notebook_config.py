@@ -12,6 +12,7 @@ config['volumes_table_path'] = f"{catalog}.{schema}.{volume}"
 
 # COMMAND ----------
 
+# DBTITLE 1,Set data paths
 config['products_path'] = config['volumes_path'] + '/products/products.csv'
 config['orders_path'] = config['volumes_path'] + '/orders/orders.csv'
 config['order_products_path'] = config['volumes_path'] + '/order_products'
@@ -19,6 +20,9 @@ config['order_products_path_prior'] = config['volumes_path'] + '/order_products/
 config['order_products_path_train'] = config['volumes_path'] + '/order_products/order_products__train.csv'
 config['aisles_path'] = config['volumes_path'] + '/aisles/aisles.csv'
 config['departments_path'] = config['volumes_path'] + '/departments/departments.csv'
+config['output_dir_train'] = f"{config['volumes_path']}/two_tower/mds_train"
+config['output_dir_validation'] = f"{config['volumes_path']}/two_tower/mds_validation"
+config['output_dir_test'] = f"{config['volumes_path']}/two_tower/mds_test"
 
 # COMMAND ----------
 
