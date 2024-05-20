@@ -102,13 +102,22 @@ print(f"Test Dataset Count: {test_df.count()}")
 
 # COMMAND ----------
 
-import shutil
+sample_train_df, sample_validation_df, sample_test_df = training_set.sample(fraction=0.05).randomSplit([0.7, 0.2, 0.1], seed=42)
 
-# Specify the path of the folder to delete
-output_dir_train = f"{config['volumes_path']}/two_tower/mds_train"
+# Show the count of each split to verify the distribution
+print(f"Sample Training Dataset Count: {sample_train_df.count()}")
+print(f"Sample Validation Dataset Count: {sample_validation_df.count()}")
+print(f"Sample Test Dataset Count: {sample_test_df.count()}")
 
-# Delete the folder and its contents
-shutil.rmtree(output_dir_train)
+# COMMAND ----------
+
+# import shutil
+
+# # Specify the path of the folder to delete
+# output_dir_train = config['output_dir_test']
+
+# # Delete the folder and its contents
+# shutil.rmtree(output_dir_train)
 
 # COMMAND ----------
 
@@ -130,9 +139,12 @@ hashes = ['sha1']
 limit = 8192
 
 # Specify where the data will be stored
-output_dir_train = f"{config['volumes_path']}/two_tower/mds_train"
-output_dir_validation = f"{config['volumes_path']}/two_tower/mds_validation"
-output_dir_test = f"{config['volumes_path']}/two_tower/mds_test"
+output_dir_train = config['output_dir_train']
+output_dir_validation = config['output_dir_validation']
+output_dir_test = config['output_dir_test']
+output_dir_train_sample = config['output_dir_train_sample']
+output_dir_validation_sample = config['output_dir_validation_sample']
+output_dir_test_sample = config['output_dir_test_sample']
 
 # Save the training data using the `dataframe_to_mds` function, which divides the dataframe into `num_workers` parts and merges the `index.json` from each part into one in a parent directory.
 def save_data(df, output_path, label, num_workers=4):
@@ -140,6 +152,12 @@ def save_data(df, output_path, label, num_workers=4):
     mds_kwargs = {'out': output_path, 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
     dataframe_to_mds(df.repartition(num_workers), merge_index=True, mds_kwargs=mds_kwargs)
 
+# save full dataset
 save_data(train_df, output_dir_train, 'train')
 save_data(validation_df, output_dir_validation, 'validation')
 save_data(test_df, output_dir_test, 'test')
+
+# save sample dataset
+save_data(sample_train_df, output_dir_train_sample, 'sample_train')
+save_data(sample_validation_df, output_dir_validation_sample, 'sample_validation')
+save_data(sample_test_df, output_dir_test_sample, 'sample_test')

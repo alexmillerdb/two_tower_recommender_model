@@ -23,6 +23,9 @@ config['departments_path'] = config['volumes_path'] + '/departments/departments.
 config['output_dir_train'] = f"{config['volumes_path']}/two_tower/mds_train"
 config['output_dir_validation'] = f"{config['volumes_path']}/two_tower/mds_validation"
 config['output_dir_test'] = f"{config['volumes_path']}/two_tower/mds_test"
+config['output_dir_train_sample'] = f"{config['volumes_path']}/two_tower/mds_train_sample"
+config['output_dir_validation_sample'] = f"{config['volumes_path']}/two_tower/mds_validation_sample"
+config['output_dir_test_sample'] = f"{config['volumes_path']}/two_tower/mds_test_sample"
 
 # COMMAND ----------
 
