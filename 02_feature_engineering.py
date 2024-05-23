@@ -30,6 +30,10 @@ display(positive_samples)
 
 # COMMAND ----------
 
+display(positive_samples.groupby("user_id").count().orderBy(F.col("count").desc()))
+
+# COMMAND ----------
+
 # MAGIC %md ### Apply random negative sampling:
 # MAGIC
 # MAGIC The two-tower model aims to learn embeddings for users and items such that the dot product between user and item is high for relevant (positive interactions) and low for irrelevant (negative) interactions. This requires distinguishing between positive and negative samples during training. 
@@ -46,7 +50,7 @@ all_product_ids = prior_order_detail.select("product_id").distinct().toPandas()[
 # Python function to dynamically return negative samples 
 def generate_negatives(user_products):
     user, products = user_products['user_id'][0], list(user_products['products'][0])
-    num_samples = len(products)
+    num_samples = 50 if len(products) > 50 else len(products)
     negative_samples = random.sample(list(set(all_product_ids) - set(products)), num_samples)
     return pd.DataFrame([({"user_id": user, "product_id": product, "label": 0}) for product in negative_samples])
 
@@ -78,46 +82,28 @@ display(training_set.groupby("label").count())
 
 # COMMAND ----------
 
-# from pyspark.ml.feature import StringIndexer
-# from pyspark.sql.types import LongType
+from pyspark.ml.feature import StringIndexer
+from pyspark.sql.types import LongType
 
-# training_set = spark.table("training_set")
-# string_indexer = StringIndexer(inputCol="user_id", outputCol="user_id_index")
-# indexed_df = string_indexer.fit(training_set).transform(training_set)
-# indexed_df = indexed_df.withColumn("user_id_index", indexed_df["user_id_index"].cast(LongType()))
-# # indexed_df = indexed_df.withColumn("user_id", indexed_df["user_id_index"]).drop("user_id_index")
+training_set = spark.table("training_set")
+string_indexer = StringIndexer(inputCol="user_id", outputCol="user_id_index")
+indexed_df = string_indexer.fit(training_set).transform(training_set)
+indexed_df = indexed_df.withColumn("user_id_index", indexed_df["user_id_index"].cast(LongType()))
+# indexed_df = indexed_df.withColumn("user_id", indexed_df["user_id_index"]).drop("user_id_index")
 
-# display(indexed_df)
+display(indexed_df)
 
 # COMMAND ----------
 
 # Split the dataframe into train, test, and validation sets
-training_set = spark.table("training_set")
+training_set = indexed_df
+
 train_df, validation_df, test_df = training_set.randomSplit([0.7, 0.2, 0.1], seed=42)
 
 # Show the count of each split to verify the distribution
 print(f"Training Dataset Count: {train_df.count()}")
 print(f"Validation Dataset Count: {validation_df.count()}")
 print(f"Test Dataset Count: {test_df.count()}")
-
-# COMMAND ----------
-
-sample_train_df, sample_validation_df, sample_test_df = training_set.sample(fraction=0.05).randomSplit([0.7, 0.2, 0.1], seed=42)
-
-# Show the count of each split to verify the distribution
-print(f"Sample Training Dataset Count: {sample_train_df.count()}")
-print(f"Sample Validation Dataset Count: {sample_validation_df.count()}")
-print(f"Sample Test Dataset Count: {sample_test_df.count()}")
-
-# COMMAND ----------
-
-# import shutil
-
-# # Specify the path of the folder to delete
-# output_dir_train = config['output_dir_test']
-
-# # Delete the folder and its contents
-# shutil.rmtree(output_dir_train)
 
 # COMMAND ----------
 
@@ -129,10 +115,11 @@ import os
 from tqdm import tqdm
 
 # Parameters required for saving data in MDS format
-cols = ["user_id", "product_id", "label"]
-columns = { key: 'int32' for key in cols }
-# label_dict = { 'label' : 'int' }
-# columns = {**label_dict, **cat_dict}
+cols = ["user_id", "product_id", "label", "user_id_index"]
+cols = ["user_id", "product_id", "user_id_index"]
+cat_dict = {key: ('int32' if key != "user_id_index" else 'int64') for key in cols}
+label_dict = { 'label' : 'int32' }
+columns = {**label_dict, **cat_dict}
 
 compression = 'zstd:7'
 hashes = ['sha1']
@@ -142,12 +129,12 @@ limit = 8192
 output_dir_train = config['output_dir_train']
 output_dir_validation = config['output_dir_validation']
 output_dir_test = config['output_dir_test']
-output_dir_train_sample = config['output_dir_train_sample']
-output_dir_validation_sample = config['output_dir_validation_sample']
-output_dir_test_sample = config['output_dir_test_sample']
 
 # Save the training data using the `dataframe_to_mds` function, which divides the dataframe into `num_workers` parts and merges the `index.json` from each part into one in a parent directory.
-def save_data(df, output_path, label, num_workers=4):
+def save_data(df, output_path, label, num_workers=10):
+    if os.path.exists(output_path):
+        print(f"Deleting {label} data: {output_path}")
+        rmtree(output_path)
     print(f"Saving {label} data to: {output_path}")
     mds_kwargs = {'out': output_path, 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
     dataframe_to_mds(df.repartition(num_workers), merge_index=True, mds_kwargs=mds_kwargs)
@@ -156,8 +143,3 @@ def save_data(df, output_path, label, num_workers=4):
 save_data(train_df, output_dir_train, 'train')
 save_data(validation_df, output_dir_validation, 'validation')
 save_data(test_df, output_dir_test, 'test')
-
-# save sample dataset
-save_data(sample_train_df, output_dir_train_sample, 'sample_train')
-save_data(sample_validation_df, output_dir_validation_sample, 'sample_validation')
-save_data(sample_test_df, output_dir_test_sample, 'sample_test')

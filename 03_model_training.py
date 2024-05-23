@@ -70,16 +70,22 @@ output_dir_test = config['output_dir_test']
 
 # DBTITLE 1,Calculate user_ct and product_ct
 import pandas as pd
+import gc
 
 training_set = spark.table("training_set").toPandas()
 user_ct = training_set['user_id'].nunique()
 product_ct = training_set['product_id'].nunique()
 
-# COMMAND ----------
-
 # Taken from earlier outputs (section 1.2, cell 2)
 cat_cols = ["user_id", "product_id"]
 emb_counts = [user_ct, product_ct]
+
+# Delete dataframes to free up memory
+del training_set
+gc.collect()
+torch.cuda.empty_cache()
+
+# COMMAND ----------
 
 def transpose_batch(batch):
     result = defaultdict(list)
@@ -184,13 +190,19 @@ class TwoTower(nn.Module):
         self.candidate_proj = MLP(in_size=embedding_dim, layer_sizes=layer_sizes, device=device)
 
     def forward(self, kjt: KeyedJaggedTensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Convert the sparse input features into dense features
+        # Input: KeyedJaggedTensor (kjt) is passed through the embedding bag collection to get the pooled embeddings
         pooled_embeddings = self.ebc(kjt)
+        # Pooled embeddings for query features are concatenated along the feature dimension
+        # Concatenated embeddings are passed through the query_proj MLP to produce final query embedding
         query_embedding: torch.Tensor = self.query_proj(
             torch.cat(
                 [pooled_embeddings[feature] for feature in self._feature_names_query],
                 dim=1,
             )
         )
+        # Pooled embeddings for candidate features are concatenated along the feature dimension
+        # Concatenated embeddings are passed through the candidate_proj MLP to produce final candidate embedding
         candidate_embedding: torch.Tensor = self.candidate_proj(
             torch.cat(
                 [
@@ -211,12 +223,18 @@ class TwoTowerTrainTask(nn.Module):
         self.loss_fn: nn.Module = nn.BCEWithLogitsLoss()
 
     def forward(self, batch: Batch) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        # batch.spare_features is KeyedJaggedTensor that is passed through TwoTower model
+        # TwoTower model returns embeddings for query and candidate
         query_embedding, candidate_embedding = self.two_tower(batch.sparse_features)
+        # Dot product between query and candidate embeddings is computed
         logits = (query_embedding * candidate_embedding).sum(dim=1).squeeze()
-        # clamp the outputs here to be between 0 and 1
-        clamped_logits = torch.clamp(logits, min=0, max=1)
-        loss = self.loss_fn(clamped_logits, batch.labels.float())
-        return loss, (loss.detach(), clamped_logits.detach(), batch.labels.detach())
+        # # clamp the outputs here to be between 0 and 1
+        # clamped_logits = torch.clamp(logits, min=0, max=1)
+        # loss = self.loss_fn(clamped_logits, batch.labels.float())
+        loss = self.loss_fn(logits, batch.labels.float())
+
+        # return loss, (loss.detach(), clamped_logits.detach(), batch.labels.detach())
+        return loss, (loss.detach(), logits.detach(), batch.labels.detach())
 
 # COMMAND ----------
 
@@ -235,8 +253,8 @@ class Args:
     epochs: int = 3  # Training for one Epoch
     embedding_dim: int = 128  # Embedding dimension is 128
     layer_sizes: List[int] = field(default_factory=lambda: [128, 64]) # The layers for the two tower model are 128, 64 (with the final embedding size for the outputs being 64)
-    learning_rate: float = 0.001
-    batch_size: int = 1024 * 3 # Set a larger batch size due to the large size of dataset
+    learning_rate: float = 0.01
+    batch_size: int = 1024 # Set a larger batch size due to the large size of dataset
     print_sharding_plan: bool = True
     print_lr: bool = False  # Optional, prints the learning rate at each iteration step
     validation_freq: int = None  # Optional, determines how often during training you want to run validation (# of training steps)
@@ -302,7 +320,8 @@ def evaluate(
     limit_batches: Optional[int],
     pipeline: TrainPipelineSparseDist,
     eval_dataloader: DataLoader,
-    stage: str) -> Tuple[float, float]:
+    stage: str,
+    transform_partial: partial) -> Tuple[float, float]:
     """
     Evaluates model. Computes and prints AUROC, accuracy, and average loss. Helper function for train_val_test.
 
@@ -365,7 +384,8 @@ def train(
     print_lr: bool,
     validation_freq: Optional[int],
     limit_train_batches: Optional[int],
-    limit_val_batches: Optional[int]) -> None:
+    limit_val_batches: Optional[int],
+    transform_partial: partial) -> None:
     """
     Trains model for 1 epoch. Helper function for train_val_test.
 
@@ -417,10 +437,10 @@ def train(
 
         # If you are validating frequently, use the evaluation function
         if validation_freq and start_it % validation_freq == 0:
-            evaluate(limit_val_batches, pipeline, val_dataloader, "val")
+            evaluate(limit_val_batches, pipeline, val_dataloader, "val", transform_partial)
             pipeline._model.train()
 
-def train_val_test(args, model, optimizer, device, train_dataloader, val_dataloader, test_dataloader) -> None:
+def train_val_test(args, model, optimizer, device, train_dataloader, val_dataloader, test_dataloader, transform_partial) -> None:
     """
     Train/validation/test loop.
 
@@ -439,7 +459,7 @@ def train_val_test(args, model, optimizer, device, train_dataloader, val_dataloa
     pipeline = TrainPipelineSparseDist(model, optimizer, device)
     
     # Getting base auroc and saving it to mlflow
-    val_loss, val_accuracy = evaluate(args.limit_val_batches, pipeline, val_dataloader, "val")
+    val_loss, val_accuracy = evaluate(args.limit_val_batches, pipeline, val_dataloader, "val", transform_partial)
     if int(os.environ["RANK"]) == 0:
         mlflow.log_metric('val_loss', val_loss)
         mlflow.log_metric('val_accuracy', val_accuracy)
@@ -455,10 +475,11 @@ def train_val_test(args, model, optimizer, device, train_dataloader, val_dataloa
             args.validation_freq,
             args.limit_train_batches,
             args.limit_val_batches,
+            transform_partial
         )
 
         # Evaluate after each training epoch
-        val_loss, val_accuracy = evaluate(args.limit_val_batches, pipeline, val_dataloader, "val")
+        val_loss, val_accuracy = evaluate(args.limit_val_batches, pipeline, val_dataloader, "val", transform_partial)
         if int(os.environ["RANK"]) == 0:
             mlflow.log_metric('val_loss', val_loss)
             mlflow.log_metric('val_accuracy', val_accuracy)
@@ -467,7 +488,7 @@ def train_val_test(args, model, optimizer, device, train_dataloader, val_dataloa
         log_state_dict_to_mlflow(pipeline._model.module, artifact_path=f"model_state_dict_{epoch}")
     
     # Evaluate on the test set after training loop finishes
-    test_loss, test_accuracy = evaluate(args.limit_test_batches, pipeline, test_dataloader, "test")
+    test_loss, test_accuracy = evaluate(args.limit_test_batches, pipeline, test_dataloader, "test", transform_partial)
     if int(os.environ["RANK"]) == 0:
         mlflow.log_metric('test_loss', test_loss)
         mlflow.log_metric('test_accuracy', test_accuracy)
@@ -513,6 +534,7 @@ def main(args: Args):
     global_rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     os.environ["NCCL_P2P_DISABLE"] = "1"
+    os.environ["NCCL_IGNORE_DISABLED_P2P"] = "1"
     device = torch.device(f"cuda:{local_rank}")
     backend = "nccl"
     torch.cuda.set_device(device)
@@ -522,11 +544,6 @@ def main(args: Args):
     os.environ['DATABRICKS_TOKEN'] = db_token
     experiment = mlflow.set_experiment(experiment_path)
 
-    # Save parameters to MLflow
-    if global_rank == 0:
-        param_dict = get_relevant_fields(args, cat_cols, emb_counts)
-        mlflow.log_params(param_dict)
-
     # Start distributed process group
     dist.init_process_group(backend=backend)
 
@@ -534,15 +551,25 @@ def main(args: Args):
     import streaming.base.util as util
 
     util.clean_stale_shared_memory()
-    # train_dataloader = get_dataloader_with_mosaic(output_dir_train, None, args.batch_size, "train")
-    # val_dataloader = get_dataloader_with_mosaic(output_dir_validation, None, args.batch_size, "val")
-    # test_dataloader = get_dataloader_with_mosaic(output_dir_test, None, args.batch_size, "test")
     local_dir_train_update = add_random_string_to_path(local_dir_train, length=8)
     local_dir_validation_update = add_random_string_to_path(local_dir_validation, length=8)
     local_dir_test_update = add_random_string_to_path(local_dir_test, length=8)
-    train_dataloader = get_dataloader_with_mosaic(output_dir_train, local_dir_train_update, args.batch_size, "train")
-    val_dataloader = get_dataloader_with_mosaic(output_dir_validation, local_dir_validation_update, args.batch_size, "val")
-    test_dataloader = get_dataloader_with_mosaic(output_dir_test, local_dir_test_update, args.batch_size, "test")
+    try:
+        train_dataloader = get_dataloader_with_mosaic(output_dir_train, local_dir_train_update, args.batch_size, "train")
+        val_dataloader = get_dataloader_with_mosaic(output_dir_validation, local_dir_validation_update, args.batch_size, "val")
+        test_dataloader = get_dataloader_with_mosaic(output_dir_test, local_dir_test_update, args.batch_size, "test")
+    except FileExistsError:
+        local_dir_train_update = add_random_string_to_path(local_dir_train, length=10)
+        local_dir_validation_update = add_random_string_to_path(local_dir_validation, length=10)
+        local_dir_test_update = add_random_string_to_path(local_dir_test, length=10)
+        train_dataloader = get_dataloader_with_mosaic(output_dir_train, local_dir_train_update, args.batch_size, "train")
+        val_dataloader = get_dataloader_with_mosaic(output_dir_validation, local_dir_validation_update, args.batch_size, "val")
+        test_dataloader = get_dataloader_with_mosaic(output_dir_test, local_dir_test_update, args.batch_size, "test")
+
+    # Save parameters to MLflow
+    if global_rank == 0:
+        param_dict = get_relevant_fields(args, cat_cols, emb_counts)
+        mlflow.log_params(param_dict)
 
     # Create the embedding tables
     eb_configs = [
@@ -582,7 +609,7 @@ def main(args: Args):
         batch_size=args.batch_size,
         # If you get an out-of-memory error, increase the percentage. See
         # https://pytorch.org/torchrec/torchrec.distributed.planner.html#torchrec.distributed.planner.storage_reservations.HeuristicalStorageReservation
-        storage_reservation=HeuristicalStorageReservation(percentage=0.05),
+        storage_reservation=HeuristicalStorageReservation(percentage=0.15),
     )
     plan = planner.collective_plan(
         two_tower_model, get_default_sharders(), dist.GroupMember.WORLD
@@ -615,6 +642,7 @@ def main(args: Args):
         train_dataloader,
         val_dataloader,
         test_dataloader,
+        transform_partial
     )
 
     # Destroy the process group
@@ -637,6 +665,12 @@ db_token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().api
  
 # Manually create the experiment so that you know the id and can send that to the worker nodes when you scale later.
 experiment = mlflow.set_experiment(experiment_path)
+
+# Log system metrics while training loop is running
+mlflow.enable_system_metrics_logging()
+
+# Automatically log per-epoch parameters, metrics, and checkpoint weights
+# mlflow.pytorch.autolog(checkpoint_save_best_only = False)
 
 # COMMAND ----------
 
@@ -666,8 +700,8 @@ experiment = mlflow.set_experiment(experiment_path)
 
 # COMMAND ----------
 
-args = Args()
-TorchDistributor(num_processes=4, local_mode=True, use_gpu=True).run(main, args)
+# args = Args(epochs=3, embedding_dim=128, layer_sizes=[128, 64], learning_rate=0.01, batch_size=1024, print_lr=True, train_on_sample=True)
+# TorchDistributor(num_processes=4, local_mode=True, use_gpu=True).run(main, args)
 
 # COMMAND ----------
 
@@ -681,5 +715,19 @@ TorchDistributor(num_processes=4, local_mode=True, use_gpu=True).run(main, args)
 
 # COMMAND ----------
 
-args = Args(epochs=3, embedding_dim=128, layer_sizes=[128, 64], learning_rate=0.01, batch_size=1024*3, print_lr=True)
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IGNORE_DISABLED_P2P"] = "1"
+
+# To Do: add try and except or retry logic for random spark failures
+args = Args(
+  epochs=10, 
+  embedding_dim=128, 
+  layer_sizes=[128, 64], 
+  learning_rate=0.01, 
+  batch_size=1024, 
+  print_lr=False,
+  validation_freq=1000
+  )
+  # limit_train_batches=100
+  # )
 TorchDistributor(num_processes=4, local_mode=False, use_gpu=True).run(main, args)
