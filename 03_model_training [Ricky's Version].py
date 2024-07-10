@@ -1,4 +1,8 @@
 # Databricks notebook source
+# MAGIC %md Using 15.0 ML g5.24xlarge [A10] cluster with 1 worker node. Does not work with > 1 worker node (Eng is looking into it)
+
+# COMMAND ----------
+
 # %pip install -r ./requirements.txt
 # dbutils.library.restartPython()
 
@@ -161,8 +165,8 @@ def get_dataloader_with_mosaic(path, batch_size, label):
     random_uuid = uuid.uuid4()
     local_path = f"/local_disk0/{random_uuid}"
     print(f"Getting {label} data from UC Volumes at {path} and saving to {local_path}")
-    dataset = StreamingDataset(remote=path, local=local_path, shuffle=True, batch_size=batch_size)
-    # dataset = StreamingDataset(local=path, shuffle=True, batch_size=batch_size)
+    # dataset = StreamingDataset(remote=path, local=local_path, shuffle=True, batch_size=batch_size)
+    dataset = StreamingDataset(local=path, shuffle=True, batch_size=batch_size)
     return StreamingDataLoader(dataset, batch_size=batch_size)
     # return DataLoader(dataset, batch_size=batch_size, pin_memory=True, drop_last=True)
 
@@ -463,6 +467,362 @@ def train_val_test(args, model, optimizer, device, train_dataloader, val_dataloa
 
 # COMMAND ----------
 
+# MAGIC %md ## Scratch Code moved to utils - keep until tested
+
+# COMMAND ----------
+
+# def transform_to_torchrec_batch(batch, num_embeddings_per_feature: Optional[List[int]] = None) -> Batch:
+#     kjt_values: List[int] = []
+#     kjt_lengths: List[int] = []
+#     for col_idx, col_name in enumerate(cat_cols):
+#         values = batch[col_name]
+#         for value in values:
+#             if value:
+#                 kjt_values.append(
+#                     value % num_embeddings_per_feature[col_idx]
+#                 )
+#                 kjt_lengths.append(1)
+#             else:
+#                 kjt_lengths.append(0)
+
+#     sparse_features = KeyedJaggedTensor.from_lengths_sync(
+#         cat_cols,
+#         torch.tensor(kjt_values),
+#         torch.tensor(kjt_lengths, dtype=torch.int32),
+#     )
+#     labels = torch.tensor(batch["label"], dtype=torch.int32)
+#     assert isinstance(labels, torch.Tensor)
+
+#     return Batch(
+#         dense_features=torch.zeros(1),
+#         sparse_features=sparse_features,
+#         labels=labels,
+#     )
+
+# transform_partial = partial(transform_to_torchrec_batch, num_embeddings_per_feature=emb_counts)
+
+# import uuid
+
+# def get_dataloader_with_mosaic(path, batch_size, label):
+#     print(f"Getting {label} data from UC Volumes")
+#     random_uuid = uuid.uuid4()
+#     dataset = StreamingDataset(remote=path, local=f"/local_disk0/{random_uuid}", shuffle=True, batch_size=batch_size)
+#     # dataset = StreamingDataset(local=path, shuffle=True, batch_size=batch_size)
+#     return StreamingDataLoader(dataset, batch_size=batch_size)
+#     # return DataLoader(dataset, batch_size=batch_size, pin_memory=True, drop_last=True)
+
+# COMMAND ----------
+
+# MAGIC %md ### Creating the Relevant TorchRec code for Training
+# MAGIC This section contains all of the training and evaluation code.
+
+# COMMAND ----------
+
+# MAGIC %md ### Two Tower Model Definition
+# MAGIC This is taken directly from the torchrec example's page. Note that the loss is the Binary Cross Entropy loss, which requires labels to be within the values {0, 1}.
+
+# COMMAND ----------
+
+# import torch.nn.functional as F
+
+# class TwoTower(nn.Module):
+#     def __init__(
+#         self,
+#         embedding_bag_collection: EmbeddingBagCollection,
+#         layer_sizes: List[int],
+#         device: Optional[torch.device] = None
+#     ) -> None:
+#         super().__init__()
+
+#         assert len(embedding_bag_collection.embedding_bag_configs()) == 2, "Expected two EmbeddingBags in the two tower model"
+#         assert embedding_bag_collection.embedding_bag_configs()[0].embedding_dim == embedding_bag_collection.embedding_bag_configs()[1].embedding_dim, "Both EmbeddingBagConfigs must have the same dimension"
+
+#         embedding_dim = embedding_bag_collection.embedding_bag_configs()[0].embedding_dim
+#         self._feature_names_query: List[str] = embedding_bag_collection.embedding_bag_configs()[0].feature_names
+#         self._candidate_feature_names: List[str] = embedding_bag_collection.embedding_bag_configs()[1].feature_names
+#         self.ebc = embedding_bag_collection
+#         self.query_proj = MLP(in_size=embedding_dim, layer_sizes=layer_sizes, device=device)
+#         self.candidate_proj = MLP(in_size=embedding_dim, layer_sizes=layer_sizes, device=device)
+
+#     def forward(self, kjt: KeyedJaggedTensor) -> Tuple[torch.Tensor, torch.Tensor]:
+#         # Convert the sparse input features into dense features
+#         # Input: KeyedJaggedTensor (kjt) is passed through the embedding bag collection to get the pooled embeddings
+#         pooled_embeddings = self.ebc(kjt)
+#         # Pooled embeddings for query features are concatenated along the feature dimension
+#         # Concatenated embeddings are passed through the query_proj MLP to produce final query embedding
+#         query_embedding: torch.Tensor = self.query_proj(
+#             torch.cat(
+#                 [pooled_embeddings[feature] for feature in self._feature_names_query],
+#                 dim=1,
+#             )
+#         )
+#         # Pooled embeddings for candidate features are concatenated along the feature dimension
+#         # Concatenated embeddings are passed through the candidate_proj MLP to produce final candidate embedding
+#         candidate_embedding: torch.Tensor = self.candidate_proj(
+#             torch.cat(
+#                 [
+#                     pooled_embeddings[feature]
+#                     for feature in self._candidate_feature_names
+#                 ],
+#                 dim=1,
+#             )
+#         )
+#         return query_embedding, candidate_embedding
+
+
+# class TwoTowerTrainTask(nn.Module):
+#     def __init__(self, two_tower: TwoTower) -> None:
+#         super().__init__()
+#         self.two_tower = two_tower
+#         # The Two Tower model uses the Binary Cross Entropy loss (you can update it as needed for your own use case and dataset)
+#         self.loss_fn: nn.Module = nn.BCEWithLogitsLoss()
+
+#     def forward(self, batch: Batch) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+#         # batch.spare_features is KeyedJaggedTensor that is passed through TwoTower model
+#         # TwoTower model returns embeddings for query and candidate
+#         query_embedding, candidate_embedding = self.two_tower(batch.sparse_features)
+#         # Dot product between query and candidate embeddings is computed
+#         logits = (query_embedding * candidate_embedding).sum(dim=1).squeeze()
+#         # # clamp the outputs here to be between 0 and 1
+#         # clamped_logits = torch.clamp(logits, min=0, max=1)
+#         # loss = self.loss_fn(clamped_logits, batch.labels.float())
+#         loss = self.loss_fn(logits, batch.labels.float())
+
+#         # return loss, (loss.detach(), clamped_logits.detach(), batch.labels.detach())
+#         return loss, (loss.detach(), logits.detach(), batch.labels.detach())
+
+# COMMAND ----------
+
+# MAGIC %md ### Training and Evaluation Helper Functions:
+# MAGIC
+# MAGIC Helper Functions for Distributed Model Saving, Distributed Model Training, and Evaluation
+
+# COMMAND ----------
+
+# def batched(it, n):
+#     assert n >= 1
+#     for x in it:
+#         yield itertools.chain((x,), itertools.islice(it, n - 1))
+
+# # Two Tower and TorchRec use special tensors called ShardedTensors.
+# # This code localizes them and puts them in the same rank that is saved to MLflow.
+# def gather_and_get_state_dict(model):
+#     rank = dist.get_rank()
+#     world_size = dist.get_world_size()
+#     state_dict = model.state_dict()
+#     gathered_state_dict = {}
+
+#     # Iterate over all items in the state_dict
+#     for fqn, tensor in state_dict.items():
+#         if isinstance(tensor, ShardedTensor):
+#             # Collect all shards of the tensor across ranks
+#             full_tensor = None
+#             if rank == 0:
+#                 full_tensor = torch.zeros(tensor.size()).to(tensor.device)
+#             tensor.gather(0, full_tensor)
+#             if rank == 0:
+#                 gathered_state_dict[fqn] = full_tensor
+#         else:
+#             # Directly add non-sharded tensors to the new state_dict
+#             if rank == 0:
+#                 gathered_state_dict[fqn] = tensor
+
+#     return gathered_state_dict
+
+# def log_state_dict_to_mlflow(model, artifact_path) -> None:
+#     # All ranks participate in gathering
+#     state_dict = gather_and_get_state_dict(model)
+#     # Only rank 0 logs the state dictionary
+#     if dist.get_rank() == 0 and state_dict:
+#         mlflow.pytorch.log_state_dict(state_dict, artifact_path=artifact_path)
+
+# def evaluate(
+#     limit_batches: Optional[int],
+#     pipeline: TrainPipelineSparseDist,
+#     eval_dataloader: DataLoader,
+#     stage: str,
+#     transform_partial: partial) -> Tuple[float, float]:
+#     """
+#     Evaluates model. Computes and prints AUROC, accuracy, and average loss. Helper function for train_val_test.
+
+#     Args:
+#         limit_batches (Optional[int]): Limits the dataloader to the first `limit_batches` batches.
+#         pipeline (TrainPipelineSparseDist): data pipeline.
+#         eval_dataloader (DataLoader): Dataloader for either the validation set or test set.
+#         stage (str): "val" or "test".
+
+#     Returns:
+#         Tuple[float, float]: a tuple of (average loss, accuracy)
+#     """
+#     pipeline._model.eval()
+#     device = pipeline._device
+
+#     iterator = itertools.islice(iter(eval_dataloader), limit_batches)
+
+#     # We are using the AUROC for binary classification
+#     auroc = metrics.AUROC(task="binary").to(device)
+
+#     is_rank_zero = dist.get_rank() == 0
+#     if is_rank_zero:
+#         pbar = tqdm(
+#             iter(int, 1),
+#             desc=f"Evaluating {stage} set",
+#             total=len(eval_dataloader),
+#             disable=False,
+#         )
+    
+#     total_loss = torch.tensor(0.0).to(device)  # Initialize total_loss as a tensor on the same device as _loss
+#     total_correct = 0
+#     total_samples = 0
+#     with torch.no_grad():
+#         while True:
+#             try:
+#                 _loss, logits, labels = pipeline.progress(map(transform_partial, iterator))
+#                 # Calculating AUROC
+#                 preds = torch.sigmoid(logits)
+#                 auroc(preds, labels)
+#                 # Calculating loss
+#                 total_loss += _loss.detach()  # Detach _loss to prevent gradients from being calculated
+#                 # total_correct += (logits.round() == labels).sum().item()  # Count the number of correct predictions
+#                 total_samples += len(labels)
+#                 if is_rank_zero:
+#                     pbar.update(1)
+#             except StopIteration:
+#                 break
+    
+#     auroc_result = auroc.compute().item()
+#     average_loss = total_loss / total_samples if total_samples > 0 else torch.tensor(0.0).to(device)
+#     average_loss_value = average_loss.item()
+
+#     if is_rank_zero:
+#         print(f"Average loss over {stage} set: {average_loss_value:.4f}.")
+#         print(f"AUROC over {stage} set: {auroc_result}")
+    
+#     return average_loss_value, auroc_result
+
+# COMMAND ----------
+
+# def train(
+#     pipeline: TrainPipelineSparseDist,
+#     train_dataloader: DataLoader,
+#     val_dataloader: DataLoader,
+#     epoch: int,
+#     print_lr: bool,
+#     validation_freq: Optional[int],
+#     limit_train_batches: Optional[int],
+#     limit_val_batches: Optional[int],
+#     transform_partial: partial) -> None:
+#     """
+#     Trains model for 1 epoch. Helper function for train_val_test.
+
+#     Args:
+#         pipeline (TrainPipelineSparseDist): data pipeline.
+#         train_dataloader (DataLoader): Training set's dataloader.
+#         val_dataloader (DataLoader): Validation set's dataloader.
+#         epoch (int): The number of complete passes through the training set so far.
+#         print_lr (bool): Whether to print the learning rate every training step.
+#         validation_freq (Optional[int]): The number of training steps between validation runs within an epoch.
+#         limit_train_batches (Optional[int]): Limits the training set to the first `limit_train_batches` batches.
+#         limit_val_batches (Optional[int]): Limits the validation set to the first `limit_val_batches` batches.
+
+#     Returns:
+#         None.
+#     """
+#     pipeline._model.train()
+
+#     # Get the first `limit_train_batches` batches
+#     iterator = itertools.islice(iter(train_dataloader), limit_train_batches)
+
+#     # Only print out the progress bar on rank 0
+#     is_rank_zero = dist.get_rank() == 0
+#     if is_rank_zero:
+#         pbar = tqdm(
+#             iter(int, 1),
+#             desc=f"Epoch {epoch}",
+#             total=len(train_dataloader),
+#             disable=False,
+#         )
+
+#     # TorchRec's pipeline paradigm is unique as it takes in an iterator of batches for training.
+#     start_it = 0 
+#     n = validation_freq if validation_freq else len(train_dataloader)
+#     for batched_iterator in batched(iterator, n):
+#         for it in itertools.count(start_it):
+#             try:
+#                 if is_rank_zero and print_lr:
+#                     for i, g in enumerate(pipeline._optimizer.param_groups):
+#                         print(f"lr: {it} {i} {g['lr']:.6f}")
+#                 pipeline.progress(map(transform_partial, batched_iterator))
+#                 if is_rank_zero:
+#                     pbar.update(1)
+#             except StopIteration:
+#                 if is_rank_zero:
+#                     print("Total number of iterations:", it)
+#                 start_it = it
+#                 break
+
+#         # If you are validating frequently, use the evaluation function
+#         if validation_freq and start_it % validation_freq == 0:
+#             evaluate(limit_val_batches, pipeline, val_dataloader, "val", transform_partial)
+#             pipeline._model.train()
+
+# def train_val_test(args, model, optimizer, device, train_dataloader, val_dataloader, test_dataloader, transform_partial) -> None:
+#     """
+#     Train/validation/test loop.
+
+#     Args:
+#         args (Args): args for training.
+#         model (torch.nn.Module): model to train.
+#         optimizer (torch.optim.Optimizer): optimizer to use.
+#         device (torch.device): device to use.
+#         train_dataloader (DataLoader): Training set's dataloader.
+#         val_dataloader (DataLoader): Validation set's dataloader.
+#         test_dataloader (DataLoader): Test set's dataloader.
+
+#     Returns:
+#         TrainValTestResults.
+#     """
+#     pipeline = TrainPipelineSparseDist(model, optimizer, device)
+
+#     # Getting base auroc and saving it to mlflow
+#     val_loss, val_auroc = evaluate(args.limit_val_batches, pipeline, val_dataloader, "val", transform_partial)
+#     if int(os.environ["RANK"]) == 0:
+#         mlflow.log_metric('val_loss', val_loss)
+#         mlflow.log_metric('val_auroc', val_auroc)
+
+#     # Running a training loop
+#     for epoch in range(args.epochs):
+#         train(
+#             pipeline,
+#             train_dataloader,
+#             val_dataloader,
+#             epoch,
+#             args.print_lr,
+#             args.validation_freq,
+#             args.limit_train_batches,
+#             args.limit_val_batches,
+#             transform_partial
+#         )
+
+#         # Evaluate after each training epoch
+#         val_loss, val_auroc = evaluate(args.limit_val_batches, pipeline, val_dataloader, "val", transform_partial)
+#         if int(os.environ["RANK"]) == 0:
+#             mlflow.log_metric('val_loss', val_loss)
+#             mlflow.log_metric('val_auroc', val_auroc)
+
+#         # Save the underlying model and results to mlflow
+#         log_state_dict_to_mlflow(pipeline._model.module, artifact_path=f"model_state_dict_{epoch}")
+    
+#     # Evaluate on the test set after training loop finishes
+#     test_loss, test_auroc = evaluate(args.limit_test_batches, pipeline, test_dataloader, "test", transform_partial)
+
+#     if int(os.environ["RANK"]) == 0:
+#         mlflow.log_metric('test_loss', test_loss)
+#         mlflow.log_metric('test_auroc', test_auroc)
+#     return test_auroc
+
+# COMMAND ----------
+
 # MAGIC %md ## The main function
 # MAGIC
 # MAGIC This function trains the Two Tower recommendation model. For more information, see the following guides/docs/code:
@@ -525,7 +885,7 @@ def main(args: Args):
     dist.init_process_group(backend=backend)
 
     # Loading the data
-    util.clean_stale_shared_memory()
+    # util.clean_stale_shared_memory()
 
     # Loading the data
     try:
@@ -711,6 +1071,7 @@ cluster_params
 import os
 # NCCL failure workaround: https://docs.databricks.com/en/machine-learning/train-model/distributed-training/spark-pytorch-distributor.html#nccl-failure-ncclinternalerror-internal-check-failed
 os.environ["NCCL_SOCKET_IFNAME"] = "eth0"
+# os.environ["NCCL_SOCKET_IFNAME"] = "eth"
 # os.environ["NCCL_DEBUG"] = "info"
 # os.environ["NCCL_P2P_DISABLE"] = "1"
 # os.environ["NCCL_IGNORE_DISABLED_P2P"] = "1"
@@ -727,12 +1088,12 @@ args = Args(
 )
 
 # assumes your driver node GPU count is the same as your worker nodes
-gpu_per_node = 4
+device_count = torch.cuda.device_count()
 worker_nodes = cluster.num_workers
 
 if training_method == TrainingMethod.MNMG:
     # args = Args()
-    TorchDistributor(num_processes=gpu_per_node * worker_nodes, local_mode=False, use_gpu=True).run(main, args)
+    TorchDistributor(num_processes=device_count * worker_nodes, local_mode=False, use_gpu=True).run(main, args)
 else:
     print(f"`training_method` was set to {repr(training_method)[1:-1]}. Set `training_method` to {repr(TrainingMethod.MNMG)[1:-1]} to run training on this cell.")
 
@@ -746,101 +1107,101 @@ else:
 
 # COMMAND ----------
 
-# username = spark.sql("SELECT current_user()").first()['current_user()']
-# username
+username = spark.sql("SELECT current_user()").first()['current_user()']
+username
 
-# experiment_path = f'/Users/{username}/torchrec-instacart-two-tower-example'
+experiment_path = f'/Users/{username}/torchrec-instacart-two-tower-example'
  
-# # You will need these later
-# db_host = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
-# db_token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+# You will need these later
+db_host = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+db_token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
  
-# # Manually create the experiment so that you know the id and can send that to the worker nodes when you scale later.
-# experiment = mlflow.set_experiment(experiment_path)
+# Manually create the experiment so that you know the id and can send that to the worker nodes when you scale later.
+experiment = mlflow.set_experiment(experiment_path)
 
 # COMMAND ----------
 
-# from mlflow import MlflowClient
+from mlflow import MlflowClient
 
-# def get_latest_run_id(experiment):
-#     latest_run = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["start_time desc"], max_results=1).iloc[0]
-#     return latest_run.run_id
+def get_latest_run_id(experiment):
+    latest_run = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["start_time desc"], max_results=1).iloc[0]
+    return latest_run.run_id
 
-# def get_latest_artifact_path(run_id):
-#     client = MlflowClient()
-#     run = client.get_run(run_id)
-#     artifact_uri = run.info.artifact_uri
-#     artifact_paths = [i.path for i in client.list_artifacts(run_id) if "base" not in i.path]
-#     return artifact_paths[-1]
+def get_latest_artifact_path(run_id):
+    client = MlflowClient()
+    run = client.get_run(run_id)
+    artifact_uri = run.info.artifact_uri
+    artifact_paths = [i.path for i in client.list_artifacts(run_id) if "base" not in i.path]
+    return artifact_paths[-1]
 
-# def get_mlflow_model(run_id, artifact_path="model_state_dict", device="cuda"):
-#     from mlflow import MlflowClient
+def get_mlflow_model(run_id, artifact_path="model_state_dict"):
+    from mlflow import MlflowClient
 
-#     device = torch.device(device)
-#     run = mlflow.get_run(run_id)
+    device = torch.device("cuda")
+    run = mlflow.get_run(run_id)
     
-#     cat_cols = eval(run.data.params.get('cat_cols'))
-#     emb_counts = eval(run.data.params.get('emb_counts'))
-#     layer_sizes = eval(run.data.params.get('layer_sizes'))
-#     embedding_dim = eval(run.data.params.get('embedding_dim'))
+    cat_cols = eval(run.data.params.get('cat_cols'))
+    emb_counts = eval(run.data.params.get('emb_counts'))
+    layer_sizes = eval(run.data.params.get('layer_sizes'))
+    embedding_dim = eval(run.data.params.get('embedding_dim'))
 
-#     MlflowClient().download_artifacts(run_id, f"{artifact_path}/state_dict.pth", "/databricks/driver")
-#     state_dict = mlflow.pytorch.load_state_dict(f"/databricks/driver/{artifact_path}")
+    MlflowClient().download_artifacts(run_id, f"{artifact_path}/state_dict.pth", "/databricks/driver")
+    state_dict = mlflow.pytorch.load_state_dict(f"/databricks/driver/{artifact_path}")
     
-#     # Remove the prefix "two_tower." from all of the keys in the state_dict
-#     state_dict = {k[10:]: v for k, v in state_dict.items()}
+    # Remove the prefix "two_tower." from all of the keys in the state_dict
+    state_dict = {k[10:]: v for k, v in state_dict.items()}
 
-#     eb_configs = [
-#         EmbeddingBagConfig(
-#             name=f"t_{feature_name}",
-#             embedding_dim=embedding_dim,
-#             num_embeddings=emb_counts[feature_idx],
-#             feature_names=[feature_name],
-#         )
-#         for feature_idx, feature_name in enumerate(cat_cols)
-#     ]
+    eb_configs = [
+        EmbeddingBagConfig(
+            name=f"t_{feature_name}",
+            embedding_dim=embedding_dim,
+            num_embeddings=emb_counts[feature_idx],
+            feature_names=[feature_name],
+        )
+        for feature_idx, feature_name in enumerate(cat_cols)
+    ]
 
-#     embedding_bag_collection = EmbeddingBagCollection(
-#         tables=eb_configs,
-#         device=device,
-#     )
-#     two_tower_model = TwoTower(
-#         embedding_bag_collection=embedding_bag_collection,
-#         layer_sizes=layer_sizes,
-#         device=device,
-#     )
+    embedding_bag_collection = EmbeddingBagCollection(
+        tables=eb_configs,
+        device=device,
+    )
+    two_tower_model = TwoTower(
+        embedding_bag_collection=embedding_bag_collection,
+        layer_sizes=layer_sizes,
+        device=device,
+    )
 
-#     two_tower_model.load_state_dict(state_dict)
+    two_tower_model.load_state_dict(state_dict)
 
-#     return two_tower_model, embedding_bag_collection, eb_configs, cat_cols, emb_counts
+    return two_tower_model, embedding_bag_collection, eb_configs, cat_cols, emb_counts
 
-# # Loading the latest model state dict from the latest run of the current experiment
-# latest_run_id = get_latest_run_id(experiment)
-# latest_artifact_path = get_latest_artifact_path(latest_run_id)
-# two_tower_model, embedding_bag_collection, eb_configs, cat_cols, emb_counts = get_mlflow_model(latest_run_id, artifact_path=latest_artifact_path, device="cpu")
+# Loading the latest model state dict from the latest run of the current experiment
+latest_run_id = get_latest_run_id(experiment)
+latest_artifact_path = get_latest_artifact_path(latest_run_id)
+two_tower_model, embedding_bag_collection, eb_configs, cat_cols, emb_counts = get_mlflow_model(latest_run_id, artifact_path=latest_artifact_path)
 
 # COMMAND ----------
 
-# def transform_test(batch, cat_cols, emb_counts):
-#     kjt_values: List[int] = []
-#     kjt_lengths: List[int] = []
-#     for col_idx, col_name in enumerate(cat_cols):
-#         values = batch[col_name]
-#         for value in values:
-#             if value:
-#                 kjt_values.append(
-#                     value % emb_counts[col_idx]
-#                 )
-#                 kjt_lengths.append(1)
-#             else:
-#                 kjt_lengths.append(0)
+def transform_test(batch, cat_cols, emb_counts):
+    kjt_values: List[int] = []
+    kjt_lengths: List[int] = []
+    for col_idx, col_name in enumerate(cat_cols):
+        values = batch[col_name]
+        for value in values:
+            if value:
+                kjt_values.append(
+                    value % emb_counts[col_idx]
+                )
+                kjt_lengths.append(1)
+            else:
+                kjt_lengths.append(0)
 
-#     sparse_features = KeyedJaggedTensor.from_lengths_sync(
-#         cat_cols,
-#         torch.tensor(kjt_values),
-#         torch.tensor(kjt_lengths, dtype=torch.int32),
-#     )
-#     return sparse_features
+    sparse_features = KeyedJaggedTensor.from_lengths_sync(
+        cat_cols,
+        torch.tensor(kjt_values),
+        torch.tensor(kjt_lengths, dtype=torch.int32),
+    )
+    return sparse_features
 
 # COMMAND ----------
 
@@ -848,38 +1209,130 @@ else:
 
 # COMMAND ----------
 
-# num_batches = 5 # Number of batches to print out at a time 
-# batch_size = 1 # Print out each individual row
+num_batches = 5 # Number of batches to print out at a time 
+batch_size = 1 # Print out each individual row
 
-# test_dataloader = iter(get_dataloader_with_mosaic(input_dir_test, batch_size, "test"))
+test_dataloader = iter(get_dataloader_with_mosaic(input_dir_test, batch_size, "test"))
 
 # COMMAND ----------
 
-# labels = []
-# user_ids = []
-# product_ids = []
-# user_embeddings = []
-# item_embeddings = []
+labels = []
+user_ids = []
+product_ids = []
+user_embeddings = []
+item_embeddings = []
 
-# for _ in range(num_batches):
-#     device = torch.device("cuda:0")
-#     two_tower_model.to(device)
-#     two_tower_model.eval()
+for _ in range(num_batches):
+    device = torch.device("cuda:0")
+    two_tower_model.to(device)
+    two_tower_model.eval()
 
-#     next_batch = next(test_dataloader)
-#     expected_result = next_batch["label"][0]
+    next_batch = next(test_dataloader)
+    expected_result = next_batch["label"][0]
 
-#     user_ids.append(next_batch["user_id"][0].item())
-#     product_ids.append(next_batch["product_id"][0].item())
+    user_ids.append(next_batch["user_id"][0].item())
+    product_ids.append(next_batch["product_id"][0].item())
     
-#     sparse_features = transform_test(next_batch, cat_cols, emb_counts)
-#     sparse_features = sparse_features.to(device)
+    sparse_features = transform_test(next_batch, cat_cols, emb_counts)
+    sparse_features = sparse_features.to(device)
     
-#     query_embedding, candidate_embedding = two_tower_model(kjt=sparse_features)
-#     user_embeddings.append(query_embedding.detach().cpu().numpy())
-#     item_embeddings.append(candidate_embedding.detach().cpu().numpy())
+    query_embedding, candidate_embedding = two_tower_model(kjt=sparse_features)
+    user_embeddings.append(query_embedding.detach().cpu().numpy())
+    item_embeddings.append(candidate_embedding.detach().cpu().numpy())
 
-#     actual_result = (query_embedding * candidate_embedding).sum(dim=1).squeeze()
-#     sigmoid_result = torch.sigmoid(actual_result)
-#     # print(f"Expected Result: {expected_result}; Actual Result: {actual_result.round().item()}; Sigmoid Result: {actual_result}")
-#     print(f"Expected Result: {expected_result}; Rounded Result: {sigmoid_result.round().item()}; Sigmoid Result: {sigmoid_result}; Dot Product Result: {actual_result}")
+    actual_result = (query_embedding * candidate_embedding).sum(dim=1).squeeze()
+    sigmoid_result = torch.sigmoid(actual_result)
+    # print(f"Expected Result: {expected_result}; Actual Result: {actual_result.round().item()}; Sigmoid Result: {actual_result}")
+    print(f"Expected Result: {expected_result}; Rounded Result: {sigmoid_result.round().item()}; Sigmoid Result: {sigmoid_result}; Dot Product Result: {actual_result}")
+
+# COMMAND ----------
+
+# MAGIC %md ### Create embedding datasets
+
+# COMMAND ----------
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+
+class TwoTowerDataset(Dataset):
+    def __init__(self, dataframe, user_id_column='user_id', product_id_column='product_id', label_column='label', user_id_index_column='user_id_index'):
+        self.user_id_column = user_id_column
+        self.product_id_column = product_id_column
+        self.label_column = label_column
+        self.dataframe = dataframe
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        user_id = torch.tensor(self.dataframe.iloc[idx][self.user_id_column], dtype=torch.int32)
+        product_id = torch.tensor(self.dataframe.iloc[idx][self.product_id_column], dtype=torch.int32)
+        label = torch.tensor(self.dataframe.iloc[idx][self.label_column], dtype=torch.int32)
+
+        return {
+            'label': label,
+            'product_id': product_id,
+            'user_id': user_id
+        }
+
+# COMMAND ----------
+
+import torch
+import pandas as pd
+
+num_batches = 1
+batch_size = 1024
+
+# Create the dataset and dataloader
+df = spark.table("training_set").limit(10000)
+pdf = df.toPandas()
+dataset = TwoTowerDataset(pdf)
+test_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+labels = []
+user_ids = []
+product_ids = []
+user_embeddings = []
+item_embeddings = []
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+two_tower_model.to(device)
+two_tower_model.eval()
+
+for batch_idx, batch in enumerate(test_dataloader):
+
+  batch = {key: value.to(device) for key, value in batch.items()}
+  expected_result = batch["label"][0]
+
+  # user_ids.append(next_batch["user_id"][0].item())
+  user_ids.extend(batch["user_id"].tolist())
+  product_ids.extend(batch["product_id"].tolist())
+  
+  sparse_features = transform_test(batch, cat_cols, emb_counts)
+  sparse_features = sparse_features.to(device)
+  
+  with torch.no_grad():
+    query_embedding, candidate_embedding = two_tower_model(kjt=sparse_features)
+    user_embeddings.extend(query_embedding.detach().cpu().numpy().tolist())
+    item_embeddings.extend(candidate_embedding.detach().cpu().numpy().tolist())
+
+# Create a DataFrame
+user_df = pd.DataFrame({
+    'user_id': user_ids,
+    'user_embedding': user_embeddings,
+})
+
+# Create a DataFrame
+item_df = pd.DataFrame({
+    'product_id': product_ids,
+    'product_embedding': item_embeddings,
+})
+
+# Print or save the DataFrame
+print(user_df.head())
+
+
+# COMMAND ----------
+
+user_df.shape

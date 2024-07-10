@@ -50,7 +50,7 @@ all_product_ids = prior_order_detail.select("product_id").distinct().toPandas()[
 # Python function to dynamically return negative samples 
 def generate_negatives(user_products):
     user, products = user_products['user_id'][0], list(user_products['products'][0])
-    num_samples = 50 if len(products) > 50 else len(products)
+    num_samples = 50 if len(products) > 50 else (5 if len(products) < 2 else len(products))
     negative_samples = random.sample(list(set(all_product_ids) - set(products)), num_samples)
     return pd.DataFrame([({"user_id": user, "product_id": product, "label": 0}) for product in negative_samples])
 
@@ -74,7 +74,71 @@ display(training_set.groupby("label").count())
 
 # COMMAND ----------
 
-(training_set
+# MAGIC %md ### Split the data into train, validation, and test sets
+# MAGIC
+# MAGIC In order to create embeddings for all products and users in the training set during the model training process, we need to ensure that every user is included in each split (train/val/test). The reason for this is to ensure every customer has an embedding created during inference.
+# MAGIC
+# MAGIC We will again use a Pandas UDF to efficiently split each 'user_id' into train/val/test for the reasons mentioned above. This is a simple approach that randomly assigns the splits but other methods could include a time dimension to split the data based on order dates.
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# Add a random number column
+df_with_random = training_set.withColumn("random", F.rand())
+
+# Create a window partitioned by user_id and ordered by the random number
+window = Window.partitionBy("user_id").orderBy("random")
+
+# Add a row number within each user's partition
+df_with_rownum = df_with_random.withColumn("row_num", F.row_number().over(window))
+
+# Calculate the total number of rows for each user
+df_with_total = df_with_rownum.withColumn(
+    "total_rows", 
+    F.count("*").over(Window.partitionBy("user_id"))
+) \
+  .withColumn("row_percent", F.col("row_num") / F.col("total_rows"))
+
+# Assign groups based on the row number and total rows
+df_with_groups = df_with_total.withColumn(
+    "group",
+    F.when(F.col("row_percent") < 0.8, "train")
+     .when(F.col("row_percent") < 0.9, "val").otherwise("test")
+     )
+
+# # Remove the temporary columns
+final_df = df_with_groups.drop("random", "row_num", "total_rows", "row_percent")
+display(final_df)
+
+# COMMAND ----------
+
+display(final_df.select("user_id", "group").distinct().groupBy("user_id").count().filter(F.col("count") < 3))
+
+# COMMAND ----------
+
+# Assuming final_df is the DataFrame with user_id and group columns
+
+# Aggregate to check if each user_id has at least one 'train' group
+user_group_check = final_df.groupBy("user_id").agg(
+    F.sum(F.when(F.col("group") == "train", 1).otherwise(0)).alias("train_count")
+)
+
+# Filter out users who do not have any 'train' group
+users_without_train = user_group_check.filter(F.col("train_count") == 0).select("user_id")
+
+# Show the users who do not have the 'train' group
+display(users_without_train)
+
+
+# COMMAND ----------
+
+# spark.sql("drop table if exists training_set")
+
+# COMMAND ----------
+
+(final_df
  .write
  .format("delta")
  .mode("overwrite")
@@ -98,7 +162,10 @@ display(indexed_df)
 # Split the dataframe into train, test, and validation sets
 training_set = indexed_df
 
-train_df, validation_df, test_df = training_set.randomSplit([0.7, 0.2, 0.1], seed=42)
+# train_df, validation_df, test_df = training_set.randomSplit([0.7, 0.2, 0.1], seed=42)
+train_df = training_set.filter(F.col("group") == "train").drop("group")
+validation_df = training_set.filter(F.col("group") == "val").drop("group")
+test_df = training_set.filter(F.col("group") == "test").drop("group")
 
 # Show the count of each split to verify the distribution
 print(f"Training Dataset Count: {train_df.count()}")
