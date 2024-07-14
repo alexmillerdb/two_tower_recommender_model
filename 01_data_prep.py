@@ -92,7 +92,7 @@ departments_schema = StructType([
   ])
  
 departments = read_data( config['departments_path'], departments_schema)
-write_data(df=products, table_name=f"{config['catalog']}.{config['schema']}.departments")
+write_data(df=departments, table_name=f"{config['catalog']}.{config['schema']}.departments")
 # ---------------------------------------------------------
  
 # aisles
@@ -103,7 +103,7 @@ aisles_schema = StructType([
   ])
  
 aisles = read_data( config['aisles_path'], aisles_schema)
-write_data(df=products, table_name=f"{config['catalog']}.{config['schema']}.aisles")
+write_data(df=aisles, table_name=f"{config['catalog']}.{config['schema']}.aisles")
 # ---------------------------------------------------------
 
 # COMMAND ----------

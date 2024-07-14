@@ -5,17 +5,12 @@
 # COMMAND ----------
 
 # MAGIC %pip install -q --upgrade --no-deps --force-reinstall torch torchvision fbgemm-gpu torchrec --index-url https://download.pytorch.org/whl/cpu
-# MAGIC %pip install -q torchmetrics==1.0.3 iopath pyre_extensions mosaicml-streaming==0.7.5
+# MAGIC %pip install -q torchmetrics==1.0.3 iopath pyre_extensions mosaicml-streaming==0.7.5 databricks-vectorsearch
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
 # MAGIC %run ./config/notebook_config
-
-# COMMAND ----------
-
-# DBTITLE 1,Move to Config
-cat_cols = ["user_id", "product_id"]
 
 # COMMAND ----------
 
@@ -35,9 +30,11 @@ experiment = mlflow.set_experiment(experiment_path)
 
 # COMMAND ----------
 
-from mlflow import MlflowClient
+import pandas as pd
+import numpy as np
 import os
 from typing import List, Optional, Tuple
+from mlflow import MlflowClient
 
 import torch
 from torch import nn
@@ -190,6 +187,7 @@ print(two_tower_model.ebc)
 # COMMAND ----------
 
 pdf = spark.table("training_set").select(*cat_cols).toPandas()
+display(pdf)
 
 # COMMAND ----------
 
@@ -198,69 +196,193 @@ pdf = spark.table("training_set").select(*cat_cols).toPandas()
 
 # COMMAND ----------
 
-kjt_values: List[int] = []
-kjt_lengths: List[int] = []
-for col_idx, col_name in enumerate(cat_cols):
-    values = pdf[col_name].unique()
-    for value in values:
-        if value:
-            kjt_values.append(
-                value % emb_counts[col_idx]
-            )
-            kjt_lengths.append(1)
-        else:
-            kjt_lengths.append(0)
+def create_keyed_jagged_tensor(num_embeddings, cat_cols, key):
 
-sparse_features = KeyedJaggedTensor.from_lengths_sync(
-    cat_cols,
-    torch.tensor(kjt_values, device=torch.device("cpu")),
-    torch.tensor(kjt_lengths, device=torch.device("cpu"), dtype=torch.int32),
-)
+    values = torch.tensor(list(range(num_embeddings)), device=torch.device("cpu"))
 
-# COMMAND ----------
+    if key == 'product_id':
+      lengths = torch.tensor(
+            [0] * num_embeddings + [1] * num_embeddings,
+            device=torch.device("cpu")
+        )
+    elif key == 'user_id':
+      lengths = torch.tensor(
+            [1] * num_embeddings + [0] * num_embeddings,
+            device=torch.device("cpu")
+        )
 
-product_ids = pdf['product_id'].sort_values().unique()[0:10000]
-# product_ids = pdf['product_id'].sort_values().unique()
-user_ids = pdf['user_id'].sort_values().unique()[0:40000]
-# user_ids = pdf['user_id'].sort_values().unique()
+    # Create the KeyedJaggedTensor
+    kjt = KeyedJaggedTensor(
+        keys=cat_cols,
+        values=values,
+        lengths=lengths
+    )
 
-product_ids_tensor = torch.tensor(product_ids, device=torch.device("cpu"))
-user_ids_tensor = torch.tensor(user_ids, device=torch.device("cpu"))
+    print("KJT structure:")
+    print(f"Keys: {kjt.keys()}")
+    print(f"Values shape: {kjt.values().shape}")
+    print(f"Lengths shape: {kjt.lengths().shape}")
+    print(f"Length per key: {kjt.length_per_key()}")
 
-values = torch.cat((user_ids_tensor, product_ids_tensor))
-
-# Create lengths tensor
-user_lengths = torch.ones(len(user_ids), dtype=torch.int32)
-product_lengths = torch.ones(len(product_ids), dtype=torch.int32)
-
-# Create offsets tensor
-user_offsets = torch.arange(len(user_ids) + 1, dtype=torch.int32)
-product_offsets = torch.arange(len(product_ids) + 1, dtype=torch.int32)
-
-# Count occurrences for each tensor
-product_unique, product_counts = torch.unique(product_ids_tensor, return_counts=True)
-user_unique, user_counts = torch.unique(user_ids_tensor, return_counts=True)
-
-# Create lengths tensor by concatenating the counts
-lengths = torch.cat((user_counts, product_counts))
-
-kjt = KeyedJaggedTensor(
-  keys=cat_cols,
-  values=values,
-  lengths=lengths
-)
+    return kjt
 
 # COMMAND ----------
 
-with torch.no_grad():
-    lookups = two_tower_model.ebc(kjt)
-    item_embeddings = two_tower_model.candidate_proj(lookups['product_id'])
-    user_embeddings = two_tower_model.query_proj(lookups['user_id'])
+def process_embeddings(two_tower_model, kjt, lookup_column):
+    """
+    Passes the KeyedJaggedTensor (KJT) through the EmbeddingBagCollection (EBC) to get all embeddings.
+
+    Parameters:
+    - two_tower_model: The model containing the ebc and projection methods.
+    - kjt: The KeyedJaggedTensor to be processed.
+
+    Returns:
+    - item_embeddings: The embeddings for the items.
+    """
+    try:
+        with torch.no_grad():
+            lookups = two_tower_model.ebc(kjt)
+            embeddings = two_tower_model.candidate_proj(lookups[lookup_column])
+        
+        print("Successfully processed embeddings")
+        print(f"{lookup_column} embeddings shape: {embeddings.shape}")
+        return embeddings
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 # COMMAND ----------
 
+product_kjt = create_keyed_jagged_tensor(emb_counts[1], cat_cols, 'product_id')
+item_embeddings = process_embeddings(two_tower_model, product_kjt, 'product_id')
 item_embeddings
 
 # COMMAND ----------
 
+# Convert KJT to dictionary
+product_kjt_dict = product_kjt.to_dict()
+
+# Get product_id values
+product_id_values = product_kjt_dict['product_id'].values()
+
+print("Product IDs:", product_id_values)
+
+# COMMAND ----------
+
+# Assuming your tensor is named 'tensor_data'
+# Convert tensor to numpy array
+item_embedding_array = item_embeddings.numpy()
+
+# Create pandas DataFrame
+item_embedding_df = pd.DataFrame({'embeddings': [row for row in item_embedding_array]})
+item_embedding_df['product_id'] = product_id_values + 1
+
+# Display the first few rows of the DataFrame
+print(item_embedding_df.head())
+
+# Get basic information about the DataFrame
+print(item_embedding_df.info())
+
+# COMMAND ----------
+
+aisles = spark.table('aisles')
+departments = spark.table("departments")
+products = spark.table("products")
+
+# COMMAND ----------
+
+item_embedding_sdf = spark.createDataFrame(item_embedding_df) \
+  .join(products, on='product_id') \
+  .join(aisles, on='aisle_id') \
+  .join(departments, on='department_id')
+  
+display(item_embedding_sdf)
+
+# COMMAND ----------
+
+item_embeddings_table = f"{catalog}.{schema}.item_two_tower_embeddings"
+
+# COMMAND ----------
+
+item_embedding_sdf.write.format("delta").option("delta.enableChangeDataFeed", "true").saveAsTable(item_embeddings_table)
+
+# COMMAND ----------
+
+from databricks.vector_search.client import VectorSearchClient
+
+vsc = VectorSearchClient()
+
+# COMMAND ----------
+
+vector_search_endpoint_name = "one-env-shared-endpoint-0"
+
+# Vector index
+vs_index = "item_two_tower_embeddings_index"
+vs_index_fullname = f"{catalog}.{schema}.{vs_index}"
+index = vsc.create_delta_sync_index_and_wait(
+  endpoint_name=vector_search_endpoint_name,
+  source_table_name=item_embeddings_table,
+  index_name=vs_index_fullname,
+  pipeline_type='TRIGGERED',
+  primary_key="product_id",
+  embedding_vector_column="embeddings",
+  embedding_dimension=64
+)
+
+index.describe()
+
+# COMMAND ----------
+
+user_kjt = create_keyed_jagged_tensor(emb_counts[0], cat_cols, 'user_id')
+user_embeddings = process_embeddings(two_tower_model, user_kjt, 'user_id')
 user_embeddings
+
+# COMMAND ----------
+
+# Convert KJT to dictionary
+user_kjt_dict = user_kjt.to_dict()
+
+# Get product_id values
+user_id_values = user_kjt_dict['user_id'].values()
+
+print("Product IDs:", user_id_values)
+
+# COMMAND ----------
+
+# Assuming your tensor is named 'tensor_data'
+# Convert tensor to numpy array
+user_embedding_array = user_embeddings.numpy()
+
+# Create pandas DataFrame
+user_embedding_df = pd.DataFrame({'embeddings': [row for row in user_embedding_array]})
+user_embedding_df['user_id'] = user_id_values
+
+# Display the first few rows of the DataFrame
+print(user_embedding_df.head())
+
+# Get basic information about the DataFrame
+print(user_embedding_df.info())
+
+# COMMAND ----------
+
+user_embedding_sdf = spark.createDataFrame(user_embedding_df)
+display(user_embedding_sdf)
+
+# COMMAND ----------
+
+user_embedding_df.iloc[0]['embeddings'].tolist()
+
+# COMMAND ----------
+
+all_columns = item_embedding_sdf.columns
+
+# Search with a filter.
+results = index.similarity_search(
+  query_vector=user_embedding_df.iloc[0]['embeddings'].tolist(),
+  columns=all_columns,
+  filters={"department_id NOT": ("17")},
+  num_results=10)
+
+results
