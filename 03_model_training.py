@@ -93,6 +93,7 @@ from collections import defaultdict
 from functools import partial
 
 from streaming import StreamingDataset, StreamingDataLoader
+import streaming.base.util as util
 
 import torch
 from torch import nn
@@ -158,6 +159,9 @@ def transform_to_torchrec_batch(batch, num_embeddings_per_feature: Optional[List
 transform_partial = partial(transform_to_torchrec_batch, num_embeddings_per_feature=emb_counts)
 
 def get_dataloader_with_mosaic(path, batch_size, label):
+
+    # util.clean_stale_shared_memory()
+
     random_uuid = uuid.uuid4()
     local_path = f"/local_disk0/{random_uuid}"
     print(f"Getting {label} data from UC Volumes at {path} and saving to {local_path}")
@@ -224,12 +228,8 @@ class TwoTowerTrainTask(nn.Module):
         query_embedding, candidate_embedding = self.two_tower(batch.sparse_features)
         # Dot product between query and candidate embeddings is computed
         logits = (query_embedding * candidate_embedding).sum(dim=1).squeeze()
-        # # clamp the outputs here to be between 0 and 1
-        # clamped_logits = torch.clamp(logits, min=0, max=1)
-        # loss = self.loss_fn(clamped_logits, batch.labels.float())
         loss = self.loss_fn(logits, batch.labels.float())
 
-        # return loss, (loss.detach(), clamped_logits.detach(), batch.labels.detach())
         return loss, (loss.detach(), logits.detach(), batch.labels.detach())
       
 # Store the results in mlflow
@@ -721,7 +721,7 @@ args = Args(
   epochs=3, 
   embedding_dim=embedding_dim, 
   layer_sizes=layer_sizes, 
-  learning_rate=0.01, 
+  learning_rate=0.05, 
   batch_size=1024*2, 
   print_lr=False
 )

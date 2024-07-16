@@ -186,8 +186,14 @@ print(two_tower_model.ebc)
 
 # COMMAND ----------
 
-pdf = spark.table("training_set").select(*cat_cols).toPandas()
-display(pdf)
+from pyspark.sql import functions as F
+
+training_set = spark.table("training_set")
+display(training_set.agg(
+  F.min("user_id").alias("min_user_id"),
+  F.max("user_id").alias("max_user_id"),
+  F.min("product_id").alias("min_product_id"),
+  F.max("product_id").alias("max_product_id")))
 
 # COMMAND ----------
 
@@ -269,29 +275,21 @@ product_id_values = product_kjt_dict['product_id'].values()
 
 print("Product IDs:", product_id_values)
 
-# COMMAND ----------
-
-# Assuming your tensor is named 'tensor_data'
 # Convert tensor to numpy array
 item_embedding_array = item_embeddings.numpy()
 
-# Create pandas DataFrame
+# Create pandas DataFrame with arrays and product ids
 item_embedding_df = pd.DataFrame({'embeddings': [row for row in item_embedding_array]})
 item_embedding_df['product_id'] = product_id_values + 1
 
 # Display the first few rows of the DataFrame
 print(item_embedding_df.head())
 
-# Get basic information about the DataFrame
-print(item_embedding_df.info())
-
 # COMMAND ----------
 
 aisles = spark.table('aisles')
 departments = spark.table("departments")
 products = spark.table("products")
-
-# COMMAND ----------
 
 item_embedding_sdf = spark.createDataFrame(item_embedding_df) \
   .join(products, on='product_id') \
@@ -303,33 +301,31 @@ display(item_embedding_sdf)
 # COMMAND ----------
 
 item_embeddings_table = f"{catalog}.{schema}.item_two_tower_embeddings"
-
-# COMMAND ----------
-
-item_embedding_sdf.write.format("delta").option("delta.enableChangeDataFeed", "true").saveAsTable(item_embeddings_table)
+item_embedding_sdf.write.format("delta").mode("overwrite").option("delta.enableChangeDataFeed", "true").saveAsTable(item_embeddings_table)
 
 # COMMAND ----------
 
 from databricks.vector_search.client import VectorSearchClient
 
 vsc = VectorSearchClient()
-
-# COMMAND ----------
-
 vector_search_endpoint_name = "one-env-shared-endpoint-0"
 
 # Vector index
 vs_index = "item_two_tower_embeddings_index"
 vs_index_fullname = f"{catalog}.{schema}.{vs_index}"
-index = vsc.create_delta_sync_index_and_wait(
-  endpoint_name=vector_search_endpoint_name,
-  source_table_name=item_embeddings_table,
-  index_name=vs_index_fullname,
-  pipeline_type='TRIGGERED',
-  primary_key="product_id",
-  embedding_vector_column="embeddings",
-  embedding_dimension=64
-)
+try:
+  index = vsc.get_index(vector_search_endpoint_name, vs_index_fullname)
+  index.sync()
+except:
+  index = vsc.create_delta_sync_index_and_wait(
+    endpoint_name=vector_search_endpoint_name,
+    source_table_name=item_embeddings_table,
+    index_name=vs_index_fullname,
+    pipeline_type='TRIGGERED',
+    primary_key="product_id",
+    embedding_vector_column="embeddings",
+    embedding_dimension=64
+  )
 
 index.describe()
 
@@ -337,9 +333,6 @@ index.describe()
 
 user_kjt = create_keyed_jagged_tensor(emb_counts[0], cat_cols, 'user_id')
 user_embeddings = process_embeddings(two_tower_model, user_kjt, 'user_id')
-user_embeddings
-
-# COMMAND ----------
 
 # Convert KJT to dictionary
 user_kjt_dict = user_kjt.to_dict()
@@ -347,40 +340,34 @@ user_kjt_dict = user_kjt.to_dict()
 # Get product_id values
 user_id_values = user_kjt_dict['user_id'].values()
 
-print("Product IDs:", user_id_values)
+print("User IDs:", user_id_values)
 
-# COMMAND ----------
-
-# Assuming your tensor is named 'tensor_data'
 # Convert tensor to numpy array
 user_embedding_array = user_embeddings.numpy()
 
 # Create pandas DataFrame
 user_embedding_df = pd.DataFrame({'embeddings': [row for row in user_embedding_array]})
-user_embedding_df['user_id'] = user_id_values
+user_embedding_df['user_id'] = user_id_values + 1
 
 # Display the first few rows of the DataFrame
 print(user_embedding_df.head())
 
-# Get basic information about the DataFrame
-print(user_embedding_df.info())
-
 # COMMAND ----------
 
+user_embeddings_table = f"{catalog}.{schema}.user_two_tower_embeddings"
 user_embedding_sdf = spark.createDataFrame(user_embedding_df)
+user_embedding_sdf.write.format("delta").mode("overwrite").option("delta.enableChangeDataFeed", "true").saveAsTable(user_embeddings_table)
 display(user_embedding_sdf)
 
 # COMMAND ----------
 
-user_embedding_df.iloc[0]['embeddings'].tolist()
-
-# COMMAND ----------
-
 all_columns = item_embedding_sdf.columns
+user_query_vector = user_embedding_df.iloc[0]['embeddings'].tolist()
 
 # Search with a filter.
+index = vsc.get_index(endpoint_name=vector_search_endpoint_name, index_name=vs_index_fullname)
 results = index.similarity_search(
-  query_vector=user_embedding_df.iloc[0]['embeddings'].tolist(),
+  query_vector=user_query_vector,
   columns=all_columns,
   filters={"department_id NOT": ("17")},
   num_results=10)
