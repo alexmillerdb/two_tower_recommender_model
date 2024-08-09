@@ -50,7 +50,8 @@ all_product_ids = prior_order_detail.select("product_id").distinct().toPandas()[
 # Python function to dynamically return negative samples 
 def generate_negatives(user_products):
     user, products = user_products['user_id'][0], list(user_products['products'][0])
-    num_samples = 50 if len(products) > 50 else (5 if len(products) < 2 else len(products))
+    # num_samples = 50 if len(products) > 50 else (5 if len(products) < 2 else len(products))
+    num_samples = len(products)
     negative_samples = random.sample(list(set(all_product_ids) - set(products)), num_samples)
     return pd.DataFrame([({"user_id": user, "product_id": product, "label": 0}) for product in negative_samples])
 
@@ -82,6 +83,10 @@ display(training_set.groupby("label").count())
 
 # COMMAND ----------
 
+# training_set = positive_samples
+
+# COMMAND ----------
+
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
@@ -104,13 +109,18 @@ df_with_total = df_with_rownum.withColumn(
 # Assign groups based on the row number and total rows
 df_with_groups = df_with_total.withColumn(
     "group",
-    F.when(F.col("row_percent") < 0.8, "train")
+    F.when(F.col("row_num") == 1, "train")
+     .when(F.col("row_percent") < 0.8, "train")
      .when(F.col("row_percent") < 0.9, "val").otherwise("test")
      )
 
 # # Remove the temporary columns
 final_df = df_with_groups.drop("random", "row_num", "total_rows", "row_percent")
 display(final_df)
+
+# COMMAND ----------
+
+display(final_df.groupby("group").count().orderBy("count"))
 
 # COMMAND ----------
 
@@ -130,7 +140,6 @@ users_without_train = user_group_check.filter(F.col("train_count") == 0).select(
 
 # Show the users who do not have the 'train' group
 display(users_without_train)
-
 
 # COMMAND ----------
 
@@ -198,7 +207,7 @@ output_dir_validation = config['output_dir_validation']
 output_dir_test = config['output_dir_test']
 
 # Save the training data using the `dataframe_to_mds` function, which divides the dataframe into `num_workers` parts and merges the `index.json` from each part into one in a parent directory.
-def save_data(df, output_path, label, num_workers=10):
+def save_data(df, output_path, label, num_workers=4):
     if os.path.exists(output_path):
         print(f"Deleting {label} data: {output_path}")
         rmtree(output_path)
@@ -207,6 +216,6 @@ def save_data(df, output_path, label, num_workers=10):
     dataframe_to_mds(df.repartition(num_workers), merge_index=True, mds_kwargs=mds_kwargs)
 
 # save full dataset
-save_data(train_df, output_dir_train, 'train')
-save_data(validation_df, output_dir_validation, 'validation')
-save_data(test_df, output_dir_test, 'test')
+save_data(train_df, output_dir_train, 'train', 10)
+save_data(validation_df, output_dir_validation, 'validation', 10)
+save_data(test_df, output_dir_test, 'test', 10)

@@ -1,12 +1,12 @@
 # Databricks notebook source
-# %pip install -r ./requirements.txt
-# dbutils.library.restartPython()
+# MAGIC %pip install -r ./requirements_cpu.txt
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# MAGIC %pip install -q --upgrade --no-deps --force-reinstall torch torchvision fbgemm-gpu torchrec --index-url https://download.pytorch.org/whl/cpu
-# MAGIC %pip install -q torchmetrics==1.0.3 iopath pyre_extensions mosaicml-streaming==0.7.5 databricks-vectorsearch
-# MAGIC dbutils.library.restartPython()
+# %pip install -q --upgrade --no-deps --force-reinstall torch fbgemm-gpu torchrec --index-url https://download.pytorch.org/whl/cpu
+# %pip install -q torchmetrics==1.0.3 iopath pyre_extensions mosaicml-streaming==0.7.5 databricks-vectorsearch
+# dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -186,6 +186,12 @@ print(two_tower_model.ebc)
 
 # COMMAND ----------
 
+query_out_features = two_tower_model.query_proj._mlp[-1]._linear.out_features
+candidate_out_features = two_tower_model.candidate_proj._mlp[-1]._linear.out_features
+assert (query_out_features == candidate_out_features), "query_out_features != candidate_out_features"
+
+# COMMAND ----------
+
 from pyspark.sql import functions as F
 
 training_set = spark.table("training_set")
@@ -247,8 +253,12 @@ def process_embeddings(two_tower_model, kjt, lookup_column):
     """
     try:
         with torch.no_grad():
-            lookups = two_tower_model.ebc(kjt)
-            embeddings = two_tower_model.candidate_proj(lookups[lookup_column])
+            if lookup_column == 'product_id':
+                lookups = two_tower_model.ebc(kjt)
+                embeddings = two_tower_model.candidate_proj(lookups[lookup_column])
+            elif lookup_column == 'user_id':
+                lookups = two_tower_model.ebc(kjt)
+                embeddings = two_tower_model.query_proj(lookups[lookup_column])
         
         print("Successfully processed embeddings")
         print(f"{lookup_column} embeddings shape: {embeddings.shape}")
@@ -300,7 +310,7 @@ display(item_embedding_sdf)
 
 # COMMAND ----------
 
-item_embeddings_table = f"{catalog}.{schema}.item_two_tower_embeddings"
+item_embeddings_table = f"{catalog}.{schema}.item_two_tower_embeddings_{candidate_out_features}"
 item_embedding_sdf.write.format("delta").mode("overwrite").option("delta.enableChangeDataFeed", "true").saveAsTable(item_embeddings_table)
 
 # COMMAND ----------
@@ -311,7 +321,7 @@ vsc = VectorSearchClient()
 vector_search_endpoint_name = "one-env-shared-endpoint-0"
 
 # Vector index
-vs_index = "item_two_tower_embeddings_index"
+vs_index = f"item_two_tower_embeddings_index_{candidate_out_features}"
 vs_index_fullname = f"{catalog}.{schema}.{vs_index}"
 try:
   index = vsc.get_index(vector_search_endpoint_name, vs_index_fullname)
@@ -324,7 +334,7 @@ except:
     pipeline_type='TRIGGERED',
     primary_key="product_id",
     embedding_vector_column="embeddings",
-    embedding_dimension=64
+    embedding_dimension=candidate_out_features
   )
 
 index.describe()
@@ -354,7 +364,7 @@ print(user_embedding_df.head())
 
 # COMMAND ----------
 
-user_embeddings_table = f"{catalog}.{schema}.user_two_tower_embeddings"
+user_embeddings_table = f"{catalog}.{schema}.user_two_tower_embeddings_{query_out_features}"
 user_embedding_sdf = spark.createDataFrame(user_embedding_df)
 user_embedding_sdf.write.format("delta").mode("overwrite").option("delta.enableChangeDataFeed", "true").saveAsTable(user_embeddings_table)
 display(user_embedding_sdf)

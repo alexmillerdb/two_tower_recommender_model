@@ -5,3 +5,4 @@ torchmetrics==1.0.3
 iopath==0.1.10
 pyre_extensions==0.0.23
 mosaicml-streaming==0.7.5
+databricks-vectorsearch
