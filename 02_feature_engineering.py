@@ -15,6 +15,52 @@ import random
 
 # COMMAND ----------
 
+# MAGIC %md #### Creating features for both the users and items is an important step for both the model training and the retrieval process. Most of the iteration will occur in this step so it's important to continuously experiment and iterate accordingly. For example, we noticed that the retrieval on the embeddings performed poorly when only including the IDs for both the user and item. However, once we added more features for users and items, the retrieval performance improved significantly. 
+
+# COMMAND ----------
+
+# MAGIC %md Features to build:
+# MAGIC - user:
+# MAGIC   - total purchases, total purchase for item, days since last order, days since last order of item
+# MAGIC - item:
+# MAGIC   - total item purchases, avg days since prior order, department, product name, aisle name
+
+# COMMAND ----------
+
+# load prior order details to create training set
+order_detail = spark.table("order_detail")
+prior_order_detail = order_detail.filter(F.col('eval_set') == 'prior')
+
+display(prior_order_detail)
+
+# COMMAND ----------
+
+# MAGIC %md User features
+
+# COMMAND ----------
+
+display(prior_order_detail.filter(F.col("user_id")=='8086'))
+
+# COMMAND ----------
+
+user_agg_features = prior_order_detail.groupby("user_id") \
+  .agg(F.countDistinct("order_id").alias("distinct_order_count"),
+       F.countDistinct("product_id").alias("distinct_product_purchased_count")
+  )
+  
+display(user_agg_features)
+
+user_order_agg_features = prior_order_detail.groupby("user_id", "order_id") \
+  .agg(F.count("product_id").alias("product_purchased_count"),
+       F.max("days_since_prior_order").alias("days_since_prior_order")) \
+  .groupby("user_id") \
+  .agg(F.avg("product_purchased_count").alias("avg_product_purchased_per_order"),
+       F.avg("days_since_prior_order").alias("avg_days_since_prior_order"))
+  
+display(user_order_agg_features)
+
+# COMMAND ----------
+
 # load prior order details to create training set
 order_detail = spark.table("order_detail")
 prior_order_detail = order_detail.filter(F.col('eval_set') == 'prior')
