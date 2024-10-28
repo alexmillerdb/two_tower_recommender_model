@@ -379,150 +379,9 @@ def transform_to_torchrec_batch(batch, num_embeddings_per_feature: Optional[List
         labels=labels,
     )
 
-# def transform_to_torchrec_batch(batch, num_embeddings_per_feature: Optional[List[int]] = None) -> Batch:
-#     kjt_values: List[int] = []
-#     kjt_lengths: List[int] = []
-#     for col_idx, col_name in enumerate(cat_cols):
-#         values = batch[col_name]
-#         for value in values:
-#             if value.numel() == 1:  # Ensure value is a scalar tensor
-#                 if value.item() != 0:  # Explicitly check the value
-#                     kjt_values.append(
-#                         value.item() % num_embeddings_per_feature[col_idx]
-#                     )
-#                     kjt_lengths.append(1)
-#                 else:
-#                     kjt_lengths.append(0)
-#             else:
-#                 # Handle the case where value is a tensor with more than one element
-#                 for v in value:
-#                     if v.item() != 0:
-#                         kjt_values.append(
-#                             v.item() % num_embeddings_per_feature[col_idx]
-#                         )
-#                         kjt_lengths.append(1)
-#                     else:
-#                         kjt_lengths.append(0)
-
-#     sparse_features = KeyedJaggedTensor.from_lengths_sync(
-#         cat_cols,
-#         torch.tensor(kjt_values),
-#         torch.tensor(kjt_lengths, dtype=torch.int32),
-#     )
-    
-#     # Adjust labels to match the combined size of positive and negative samples
-#     positive_labels = batch["label"].clone().detach().to(torch.int32)
-#     negative_labels = torch.zeros(len(kjt_lengths) - len(positive_labels), dtype=torch.int32)
-    
-#     # Ensure both positive_labels and negative_labels have the same number of dimensions
-#     if positive_labels.dim() == 1:
-#         positive_labels = positive_labels.unsqueeze(1)
-#     if negative_labels.dim() == 1:
-#         negative_labels = negative_labels.unsqueeze(1)
-    
-#     # Ensure the sizes match in all dimensions except the concatenation dimension
-#     if positive_labels.size(1) != negative_labels.size(1):
-#         positive_labels = positive_labels.expand(-1, negative_labels.size(1))
-    
-#     labels = torch.cat([positive_labels, negative_labels], dim=0)
-    
-#     assert isinstance(labels, torch.Tensor)
-
-#     return Batch(
-#         dense_features=torch.zeros(1),
-#         sparse_features=sparse_features,
-#         labels=labels,
-#     )
-
 transform_partial = partial(transform_to_torchrec_batch, num_embeddings_per_feature=emb_counts)
 
-class TabularDataset(StreamingDataset):
-    def __init__(self, 
-                 streams: Optional[Sequence[Stream]] = None,
-                 remote: Optional[str] = None,
-                 local: Optional[str] = None, 
-                 shuffle: Optional[bool] = False, 
-                 batch_size: Optional[int] = False, 
-                 all_product_ids: Optional[list] = None  # List of all product IDs
-                 ) -> None:
-        
-        super().__init__(
-            streams=streams,
-            remote=remote, 
-            local=local, 
-            shuffle=shuffle, 
-            batch_size=batch_size
-            )
-        
-        self.all_product_ids = all_product_ids if all_product_ids is not None else []
-    
-    def __getitem__(self, idx):
-        obj = super().__getitem__(idx)  # Fetch the data object
-        user_ids = obj['user_id']
-        product_ids = obj['product_id']
-        labels = obj['label']
-        
-        # Ensure user_ids, product_ids, and labels are lists or iterable
-        if not isinstance(user_ids, list):
-            user_ids = [user_ids]
-        if not isinstance(product_ids, list):
-            product_ids = [product_ids]
-        if not isinstance(labels, list):
-            labels = [labels]
-        
-        user_ids_tensor = torch.tensor(user_ids, dtype=torch.int32)
-        product_ids_tensor = torch.tensor(product_ids, dtype=torch.int32)
-        labels_tensor = torch.tensor(labels, dtype=torch.int32)
-        
-        # # Debugging prints
-        # print(f"user_ids_tensor: {user_ids_tensor}")
-        # print(f"product_ids_tensor: {product_ids_tensor}")
-        # print(f"labels_tensor: {labels_tensor}")
-        
-        # Ensure tensors are of the same length
-        assert user_ids_tensor.shape == product_ids_tensor.shape == labels_tensor.shape, \
-            "Tensors must be of the same shape"
-        
-        # Add random negative samples
-        negative_samples = []
-        unique_user_ids = torch.unique(user_ids_tensor)
-        
-        for user_id in unique_user_ids:
-            user_product_ids = product_ids_tensor[user_ids_tensor == user_id].tolist()
-            num_negatives = len(user_product_ids)
-            neg_products = [prod for prod in self.all_product_ids if prod not in user_product_ids]
-            sampled_neg_products = random.sample(neg_products, min(num_negatives, len(neg_products)))
-            negative_samples.extend([(user_id.item(), neg_product, 0) for neg_product in sampled_neg_products])
-        
-        # Combine positive and negative samples
-        positive_samples = list(zip(user_ids_tensor.tolist(), product_ids_tensor.tolist(), labels_tensor.tolist()))
-        combined_samples = positive_samples + negative_samples
-        
-        # Convert combined samples to tensors
-        if combined_samples:
-            combined_user_ids, combined_product_ids, combined_labels = zip(*combined_samples)
-            combined_user_ids_tensor = torch.tensor(combined_user_ids, dtype=torch.int32)
-            combined_product_ids_tensor = torch.tensor(combined_product_ids, dtype=torch.int32)
-            combined_labels_tensor = torch.tensor(combined_labels, dtype=torch.int32)
-        else:
-            combined_user_ids_tensor = torch.tensor([], dtype=torch.int32)
-            combined_product_ids_tensor = torch.tensor([], dtype=torch.int32)
-            combined_labels_tensor = torch.tensor([], dtype=torch.int32)
-        
-        return {"user_id": combined_user_ids_tensor,
-                "product_id": combined_product_ids_tensor,
-                "label": combined_labels_tensor}
-        
-# def get_dataloader_with_mosaic(path, batch_size, label):
 
-#     util.clean_stale_shared_memory()
-
-#     random_uuid = uuid.uuid4()
-#     local_path = f"/local_disk0/{random_uuid}"
-#     print(f"Getting {label} data from UC Volumes at {path} and saving to {local_path}")
-#     dataset = TabularDataset(remote=path, local=local_path, shuffle=True, batch_size=batch_size, all_product_ids=all_product_ids)
-#     # dataset = StreamingDataset(local=path, shuffle=True, batch_size=batch_size)
-#     return StreamingDataLoader(dataset, batch_size=batch_size)
 
 def get_dataloader_with_mosaic(path, batch_size, label):
 
@@ -594,30 +453,6 @@ class TwoTowerTrainTask(nn.Module):
         loss = self.loss_fn(logits, batch.labels.float())
 
         return loss, (loss.detach(), logits.detach(), batch.labels.detach())
-
-# class TwoTowerTrainTask(nn.Module):
-#     def __init__(self, two_tower: TwoTower, margin=1.0):
-#         super().__init__()
-#         self.two_tower = two_tower
-#         self.margin = margin
-
-#     def forward(self, batch: Batch):
-#         query_embedding, candidate_embedding = self.two_tower(batch.sparse_features)
-        
-#         # Normalize embeddings
-#         query_embedding = F.normalize(query_embedding, p=2, dim=1)
-#         candidate_embedding = F.normalize(candidate_embedding, p=2, dim=1)
-        
-#         # Compute similarity (Euclidean distance)
-#         distance = F.pairwise_distance(query_embedding, candidate_embedding)
-        
-#         # Compute contrastive loss
-#         loss = 0.5 * batch.labels * torch.pow(distance, 2) + \
-#                0.5 * (1 - batch.labels) * torch.pow(torch.clamp(self.margin - distance, min=0.0), 2)
-        
-#         loss = loss.mean()
-
-#         return loss, (loss.detach(), distance.detach(), batch.labels.detach())
 
       
 # Store the results in mlflow
@@ -899,8 +734,6 @@ def main(args: Args):
     global_rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     os.environ["NCCL_SOCKET_IFNAME"] = "eth0"
-    # os.environ["NCCL_P2P_DISABLE"] = "1"
-    # os.environ["NCCL_IGNORE_DISABLED_P2P"] = "1"
     device = torch.device(f"cuda:{local_rank}")
     backend = "nccl"
     torch.cuda.set_device(device)
@@ -1036,9 +869,6 @@ experiment = mlflow.set_experiment(experiment_path)
 
 embedding_dim = 128
 layer_sizes = [128, 64]
-# test more layer_sizes
-# test more than 3 epochs
-# learning rate = 0.0001
 args = Args(
   epochs=3, 
   embedding_dim=embedding_dim, 
