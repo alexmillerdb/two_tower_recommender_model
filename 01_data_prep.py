@@ -106,16 +106,12 @@ aisles = read_data( config['aisles_path'], aisles_schema)
 write_data(df=aisles, table_name=f"{config['catalog']}.{config['schema']}.aisles")
 # ---------------------------------------------------------
 
-# COMMAND ----------
-
+# order_products_detail
+# ---------------------------------------------------------
 orders = spark.table('orders')
 order_products = spark.table("order_products")
 order_detail = (
   order_products
     .join(orders, on=['order_id'])
 )
-display(order_detail)
-
-# COMMAND ----------
-
 write_data(df=order_detail, table_name=f"{config['catalog']}.{config['schema']}.order_detail")

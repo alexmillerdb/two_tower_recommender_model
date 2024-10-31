@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install -q mosaicml-streaming
+# MAGIC %pip install mosaicml-streaming==0.9.0
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -18,6 +18,8 @@ import random
 # load prior order details to create training set
 order_detail = spark.table("order_detail")
 prior_order_detail = order_detail.filter(F.col('eval_set') == 'prior')
+product_embeddings = spark.table("product_embeddings")
+product_data = spark.table("products")
 
 # create training set with positive labels
 positive_samples = (
@@ -59,6 +61,7 @@ def generate_negatives(user_products):
 user_products_list = positive_samples \
     .groupBy("user_id") \
     .agg(F.collect_set("product_id").alias("products"))
+    # .sample(fraction=0.1)
 
 # Generate negative samples
 negative_samples = user_products_list \
@@ -80,10 +83,6 @@ display(training_set.groupby("label").count())
 # MAGIC In order to create embeddings for all products and users in the training set during the model training process, we need to ensure that every user is included in each split (train/val/test). The reason for this is to ensure every customer has an embedding created during inference.
 # MAGIC
 # MAGIC We will again use a Pandas UDF to efficiently split each 'user_id' into train/val/test for the reasons mentioned above. This is a simple approach that randomly assigns the splits but other methods could include a time dimension to split the data based on order dates.
-
-# COMMAND ----------
-
-# training_set = positive_samples
 
 # COMMAND ----------
 
@@ -115,7 +114,10 @@ df_with_groups = df_with_total.withColumn(
      )
 
 # # Remove the temporary columns
-final_df = df_with_groups.drop("random", "row_num", "total_rows", "row_percent")
+final_df = df_with_groups \
+  .join(product_data, on=['product_id']) \
+  .drop("random", "row_num", "total_rows", "row_percent", "product_name")
+
 display(final_df)
 
 # COMMAND ----------
@@ -139,11 +141,11 @@ user_group_check = final_df.groupBy("user_id").agg(
 users_without_train = user_group_check.filter(F.col("train_count") == 0).select("user_id")
 
 # Show the users who do not have the 'train' group
-display(users_without_train)
+assert users_without_train.count() == 0, "Found users without 'train' group"
 
 # COMMAND ----------
 
-# spark.sql("drop table if exists training_set")
+# spark.sql("DROP TABLE IF EXISTS training_set")
 
 # COMMAND ----------
 
@@ -169,7 +171,7 @@ display(indexed_df)
 # COMMAND ----------
 
 # Split the dataframe into train, test, and validation sets
-training_set = indexed_df
+training_set = indexed_df.fillna(0)
 
 # train_df, validation_df, test_df = training_set.randomSplit([0.7, 0.2, 0.1], seed=42)
 train_df = training_set.filter(F.col("group") == "train").drop("group")
@@ -191,11 +193,14 @@ import os
 from tqdm import tqdm
 
 # Parameters required for saving data in MDS format
-cols = ["user_id", "product_id", "label", "user_id_index"]
-cols = ["user_id", "product_id", "user_id_index"]
-cat_dict = {key: ('int32' if key != "user_id_index" else 'int64') for key in cols}
-label_dict = { 'label' : 'int32' }
-columns = {**label_dict, **cat_dict}
+columns = {
+    "product_id": 'int32',
+    "user_id": 'int32',
+    "label": "int32",
+    "aisle_id": 'int32',
+    "department_id": 'int32',
+    "user_id_index": 'int64'
+}
 
 compression = 'zstd:7'
 hashes = ['sha1']
@@ -212,10 +217,12 @@ def save_data(df, output_path, label, num_workers=4):
         print(f"Deleting {label} data: {output_path}")
         rmtree(output_path)
     print(f"Saving {label} data to: {output_path}")
+    # mds_kwargs = {'out': (f"/local_disk0/{label}", output_path), 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
     mds_kwargs = {'out': output_path, 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
     dataframe_to_mds(df.repartition(num_workers), merge_index=True, mds_kwargs=mds_kwargs)
+    # dataframe_to_mds(df, merge_index=True, mds_kwargs=mds_kwargs)
 
 # save full dataset
-save_data(train_df, output_dir_train, 'train', 10)
+save_data(train_df, output_dir_train, 'train', 15)
 save_data(validation_df, output_dir_validation, 'validation', 10)
 save_data(test_df, output_dir_test, 'test', 10)
