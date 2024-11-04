@@ -32,8 +32,6 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LinearLR
 from torch.utils.data import Dataset, DataLoader, RandomSampler
-from torch.distributed.optim import _apply_optimizer_in_backward as apply_optimizer_in_backward
-from torch.distributed._sharded_tensor import ShardedTensor
 import torchmetrics
 
 # PySpark
@@ -698,7 +696,7 @@ model_config = ModelConfig(
 data_config = DataConfig(
     train_path=config['output_dir_train'],
     eval_path=config['output_dir_validation'],
-    batch_size=32,
+    batch_size=64,
     write_to_local=False,
     num_workers=4,
     shuffle=True
@@ -706,7 +704,7 @@ data_config = DataConfig(
 
 trainer_config = TrainerConfig(
     max_duration="1ep",
-    eval_interval='1000ba',
+    # eval_interval='1000ba',
     train_subset_num_batches=-1,
     eval_subset_num_batches=-1,
     save_folder='/local_disk0/composer-training/checkpoints',
