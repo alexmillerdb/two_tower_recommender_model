@@ -36,7 +36,6 @@ spark_df = spark.createDataFrame(df)
 
 # TODO: Update this with a path in UC for where this data should be saved
 spark_df.write.mode("overwrite").saveAsTable(f"{catalog}.{schema}.learning_from_sets_dataset")
-spark_df.write.format("parquet").mode("overwrite").save(f"{config['volumes_path']}/parquet")
 
 # COMMAND ----------
 
