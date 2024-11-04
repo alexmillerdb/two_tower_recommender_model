@@ -1,14 +1,8 @@
 # Databricks notebook source
 # MAGIC %pip install -q --upgrade --no-deps --force-reinstall torch torchvision fbgemm-gpu torchrec --index-url https://download.pytorch.org/whl/cu118
 # MAGIC %pip install -q torchmetrics==1.0.3 iopath pyre_extensions mosaicml-streaming==0.7.5
-# MAGIC %pip install --upgrade mlflow
-# MAGIC %pip install ray==2.20.0
+# MAGIC %pip install --upgrade mlflow ray
 # MAGIC dbutils.library.restartPython()
-
-# COMMAND ----------
-
-# spark_tbl = spark.table("main.alex_m.learning_from_sets_training_set")
-# spark_tbl.write.format("parquet").mode("overwrite").save("/Volumes/main/alex_m/learning_from_sets_data/parquet")
 
 # COMMAND ----------
 
@@ -34,7 +28,7 @@ cluster = setup_ray_cluster(
   num_gpus_worker_node=4,   # number of GPUs to allocate per worker node
   num_gpus_head_node=4,     # number of GPUs to allocate on head node (driver)
   num_cpus_worker_node=40,  # number of CPUs to allocate on worker nodes
-  num_cpus_head_node=16     # number of CPUs to allocate on head node (driver)
+  num_cpus_head_node=32     # number of CPUs to allocate on head node (driver)
 )
 
 
@@ -51,7 +45,7 @@ print(ray.cluster_resources())
 import ray
 import os
 
-os.environ["DATABRICKS_HOST"] = "spark.conf.get(\"spark.databricks.workspaceUrl\")"
+os.environ["DATABRICKS_HOST"] = spark.conf.get("spark.databricks.workspaceUrl")
 os.environ["DATABRICKS_TOKEN"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 
 ds = ray.data.read_parquet(f"{config['volumes_path']}/parquet")
@@ -79,19 +73,19 @@ model_version = 5
 
 mlflow_db_creds = get_databricks_env_vars("databricks")
 
+# Get the source run_id from the model registered in UC
+client = mlflow.tracking.MlflowClient()
+model_version_details = client.get_model_version(name=model_name, version=model_version)
+source_run_id = model_version_details.run_id
+logged_model = f'runs:/{source_run_id}/two_tower_pyfunc'
+
 class PyTorchPredictor:
     def __init__(self):
 
         # Set Databricks credentials
         os.environ.update(mlflow_db_creds)
 
-        # Get the source run_id from the model registered in UC
-        client = mlflow.tracking.MlflowClient()
-        model_version_details = client.get_model_version(name=model_name, version=model_version)
-        source_run_id = model_version_details.run_id
-
         # Load model
-        logged_model = f'runs:/{source_run_id}/two_tower_pyfunc'
         self.model = mlflow.pyfunc.load_model(logged_model)
 
     def __call__(self, batch: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:

@@ -140,6 +140,11 @@ display(relevant_df)
 
 # COMMAND ----------
 
+relevant_df.write.mode("overwrite").saveAsTable(f"{catalog}.{schema}.learning_from_sets_training_set")
+relevant_df.write.format("parquet").mode("overwrite").save(f"{config['volumes_path']}/parquet")
+
+# COMMAND ----------
+
 # MAGIC %md ## Step 3. Saving to MDS Format within UC Volumes
 # MAGIC
 # MAGIC In this step, you convert the data to MDS to allow for efficient train/validation/test splitting and then save it to a UC Volume.
