@@ -68,6 +68,7 @@ from typing import Dict
 from mlflow.utils.databricks_utils import get_databricks_env_vars
 
 # Load the model from the Unity Catalog model registry
+mlflow.set_registry_uri("databricks-uc")
 model_name = f"{catalog}.{schema}.learning_from_sets_two_tower"
 model_version = 5
 
