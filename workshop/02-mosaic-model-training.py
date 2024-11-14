@@ -1011,8 +1011,8 @@ item_embedding_df['movie_id'] = movie_id_values + 1
 
 item_embedding_sdf = spark.createDataFrame(item_embedding_df)
 
-# item_embeddings_table = f"{catalog}.{schema}.item_two_tower_embeddings_{candidate_out_features}"
-# item_embedding_sdf.write.format("delta").mode("overwrite").option("delta.enableChangeDataFeed", "true").saveAsTable(item_embeddings_table)
+item_embeddings_table = f"{catalog}.{schema}.item_two_tower_embeddings"
+item_embedding_sdf.write.format("delta").mode("overwrite").option("delta.enableChangeDataFeed", "true").saveAsTable(item_embeddings_table)
 display(item_embedding_sdf)
 
 # COMMAND ----------

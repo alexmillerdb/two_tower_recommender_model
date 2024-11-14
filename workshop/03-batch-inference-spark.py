@@ -23,7 +23,7 @@ from typing import Dict
 # Load the model from the Unity Catalog model registry
 mlflow.set_registry_uri("databricks-uc")
 model_name = f"{catalog}.{schema}.learning_from_sets_two_tower"
-model_version = 5
+model_version = 6
 
 model = mlflow.pyfunc.spark_udf(spark, model_uri=f"models:/{model_name}/{model_version}")
 
@@ -33,3 +33,7 @@ from pyspark.sql.functions import struct, col
 
 predictions = df.withColumn('predictions', model(struct(*map(col, df.columns)))).toPandas()
 display(predictions)
+
+# COMMAND ----------
+
+# predictions.write.mode("overwrite").saveAsTable("learning_from_sets_two_tower_predictions")

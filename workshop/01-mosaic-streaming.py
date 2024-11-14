@@ -43,7 +43,7 @@ spark_df.write.mode("overwrite").saveAsTable(f"{catalog}.{schema}.learning_from_
 learning_from_sets_table = f"{catalog}.{schema}.learning_from_sets_dataset"
 
 # TODO: The marketplace example provides you with the MDS-formatted data, but if the data needs to be saved to an alternate UC Volumes path, set this variable to `True` and update the following paths.
-save_data_to_uc_volumes = False
+save_data_to_uc_volumes = True
 
 # TODO: These paths should be updated if the MDS-formatted data need to be stored at a different UC Volumes location.
 output_dir_train = config['output_dir_train']

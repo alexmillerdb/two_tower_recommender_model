@@ -51,7 +51,7 @@ os.environ["DATABRICKS_TOKEN"] = dbutils.notebook.entry_point.getDbutils().noteb
 ds = ray.data.read_parquet(f"{config['volumes_path']}/parquet")
 ds.take(1)
 
-# how to use with databricks tables
+# # how to use with databricks tables
 # ds = ray.data.read_databricks_tables(
 #   warehouse_id="475b94ddc7cd5211",
 #   table="learning_from_sets_dataset",
@@ -70,7 +70,7 @@ from mlflow.utils.databricks_utils import get_databricks_env_vars
 # Load the model from the Unity Catalog model registry
 mlflow.set_registry_uri("databricks-uc")
 model_name = f"{catalog}.{schema}.learning_from_sets_two_tower"
-model_version = 5
+model_version = 6
 
 mlflow_db_creds = get_databricks_env_vars("databricks")
 
