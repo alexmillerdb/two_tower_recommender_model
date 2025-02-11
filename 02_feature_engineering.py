@@ -18,7 +18,7 @@ import random
 # load prior order details to create training set
 order_detail = spark.table("order_detail")
 prior_order_detail = order_detail.filter(F.col('eval_set') == 'prior')
-product_embeddings = spark.table("product_embeddings")
+# product_embeddings = spark.table("product_embeddings")
 product_data = spark.table("products")
 
 # create training set with positive labels
@@ -149,22 +149,47 @@ assert users_without_train.count() == 0, "Found users without 'train' group"
 
 # COMMAND ----------
 
-(final_df
- .write
- .format("delta")
- .mode("overwrite")
- .saveAsTable("training_set"))
+final_df.agg(
+    F.min("user_id").alias("min_user_id"),
+    F.max("user_id").alias("max_user_id"),
+    F.min("product_id").alias("min_product_id"),
+    F.max("product_id").alias("max_product_id")
+).display()
+
+# COMMAND ----------
+
+# (final_df
+#  .write
+#  .format("delta")
+#  .mode("overwrite")
+#  .saveAsTable("training_set"))
+
+# COMMAND ----------
+
+# from pyspark.ml.feature import StringIndexer
+# from pyspark.sql.types import LongType
+
+# training_set = spark.table("training_set")
+# string_indexer = StringIndexer(inputCol="user_id", outputCol="user_id_index")
+# indexed_df = string_indexer.fit(training_set).transform(training_set)
+# indexed_df = indexed_df.withColumn("user_id_index", indexed_df["user_id_index"].cast(LongType()))
+# # indexed_df = indexed_df.withColumn("user_id", indexed_df["user_id_index"]).drop("user_id_index")
+
+# display(indexed_df)
 
 # COMMAND ----------
 
 from pyspark.ml.feature import StringIndexer
 from pyspark.sql.types import LongType
 
-training_set = spark.table("training_set")
-string_indexer = StringIndexer(inputCol="user_id", outputCol="user_id_index")
-indexed_df = string_indexer.fit(training_set).transform(training_set)
-indexed_df = indexed_df.withColumn("user_id_index", indexed_df["user_id_index"].cast(LongType()))
-# indexed_df = indexed_df.withColumn("user_id", indexed_df["user_id_index"]).drop("user_id_index")
+indexers = ["user_id", "product_id"]
+
+indexed_df = final_df
+for input_col in indexers:
+    output_col = input_col + "_index"
+    string_indexer = StringIndexer(inputCol=input_col, outputCol=output_col)
+    indexed_df = string_indexer.fit(indexed_df).transform(indexed_df)
+    indexed_df = indexed_df.withColumn(output_col, indexed_df[output_col].cast(LongType()))
 
 display(indexed_df)
 
@@ -182,6 +207,14 @@ test_df = training_set.filter(F.col("group") == "test").drop("group")
 print(f"Training Dataset Count: {train_df.count()}")
 print(f"Validation Dataset Count: {validation_df.count()}")
 print(f"Test Dataset Count: {test_df.count()}")
+
+# COMMAND ----------
+
+(training_set
+ .write
+ .mode("overwrite")
+ .option("overwriteSchema", "true")
+ .saveAsTable("training_set"))
 
 # COMMAND ----------
 

@@ -11,11 +11,6 @@
 
 # COMMAND ----------
 
-spark.sql(f'CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}')
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {config['volumes_table_path']}")
-
-# COMMAND ----------
-
 # MAGIC %md Create Kaggle username and token to download dataset then setup secret and scope in Databricks using Databricks CLI (script below):
 # MAGIC
 # MAGIC `databricks secrets put-secret <scope_name> <key_name>`

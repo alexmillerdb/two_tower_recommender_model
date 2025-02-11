@@ -1,6 +1,6 @@
 # Databricks notebook source
-catalog = "main"
-schema = "alex_m"
+catalog = "alex_m"
+schema = "recsys"
 volume = "instacart_data"
 
 config = {}
@@ -29,5 +29,8 @@ config['output_dir_test_sample'] = f"{config['volumes_path']}/two_tower/mds_test
 
 # COMMAND ----------
 
+spark.sql(f'CREATE CATALOG IF NOT EXISTS {catalog}')
+spark.sql(f'CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}')
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {config['volumes_table_path']}")
 spark.sql(f"USE CATALOG {config['catalog']}")
 spark.sql(f"USE SCHEMA {config['schema']}")
