@@ -216,46 +216,67 @@ print(f"Test Dataset Count: {test_df.count()}")
  .option("overwriteSchema", "true")
  .saveAsTable("training_set"))
 
+(train_df
+ .write
+ .format("parquet")
+ .mode("overwrite")
+ .option("overwriteSchema", "true")
+ .save(config['output_dir_train_parquet']))
+
+(validation_df
+ .write
+ .format("parquet")
+ .mode("overwrite")
+ .option("overwriteSchema", "true")
+ .save(config['output_dir_validation_parquet']))
+
+(test_df
+ .write
+ .format("parquet")
+ .mode("overwrite")
+ .option("overwriteSchema", "true")
+ .save(config['output_dir_test_parquet']))
+
 # COMMAND ----------
 
-from streaming import StreamingDataset
-from streaming.base.converters import dataframe_to_mds
-from streaming.base import MDSWriter
-from shutil import rmtree
-import os
-from tqdm import tqdm
+# from streaming import StreamingDataset
+# from streaming.base.converters import dataframe_to_mds
+# from streaming.base import MDSWriter
+# from shutil import rmtree
+# import os
+# from tqdm import tqdm
 
-# Parameters required for saving data in MDS format
-columns = {
-    "product_id": 'int32',
-    "user_id": 'int32',
-    "label": "int32",
-    "aisle_id": 'int32',
-    "department_id": 'int32',
-    "user_id_index": 'int64'
-}
+# # Parameters required for saving data in MDS format
+# columns = {
+#     "product_id": 'int32',
+#     "user_id": 'int32',
+#     "label": "int32",
+#     "aisle_id": 'int32',
+#     "department_id": 'int32',
+#     "user_id_index": 'int64'
+# }
 
-compression = 'zstd:7'
-hashes = ['sha1']
-limit = 8192
+# compression = 'zstd:7'
+# hashes = ['sha1']
+# limit = 8192
 
-# Specify where the data will be stored
-output_dir_train = config['output_dir_train']
-output_dir_validation = config['output_dir_validation']
-output_dir_test = config['output_dir_test']
+# # Specify where the data will be stored
+# output_dir_train = config['output_dir_train']
+# output_dir_validation = config['output_dir_validation']
+# output_dir_test = config['output_dir_test']
 
-# Save the training data using the `dataframe_to_mds` function, which divides the dataframe into `num_workers` parts and merges the `index.json` from each part into one in a parent directory.
-def save_data(df, output_path, label, num_workers=4):
-    if os.path.exists(output_path):
-        print(f"Deleting {label} data: {output_path}")
-        rmtree(output_path)
-    print(f"Saving {label} data to: {output_path}")
-    # mds_kwargs = {'out': (f"/local_disk0/{label}", output_path), 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
-    mds_kwargs = {'out': output_path, 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
-    dataframe_to_mds(df.repartition(num_workers), merge_index=True, mds_kwargs=mds_kwargs)
-    # dataframe_to_mds(df, merge_index=True, mds_kwargs=mds_kwargs)
+# # Save the training data using the `dataframe_to_mds` function, which divides the dataframe into `num_workers` parts and merges the `index.json` from each part into one in a parent directory.
+# def save_data(df, output_path, label, num_workers=4):
+#     if os.path.exists(output_path):
+#         print(f"Deleting {label} data: {output_path}")
+#         rmtree(output_path)
+#     print(f"Saving {label} data to: {output_path}")
+#     # mds_kwargs = {'out': (f"/local_disk0/{label}", output_path), 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
+#     mds_kwargs = {'out': output_path, 'columns': columns, 'compression': compression, 'hashes': hashes, 'size_limit': limit}
+#     dataframe_to_mds(df.repartition(num_workers), merge_index=True, mds_kwargs=mds_kwargs)
+#     # dataframe_to_mds(df, merge_index=True, mds_kwargs=mds_kwargs)
 
-# save full dataset
-save_data(train_df, output_dir_train, 'train', 15)
-save_data(validation_df, output_dir_validation, 'validation', 10)
-save_data(test_df, output_dir_test, 'test', 10)
+# # save full dataset
+# save_data(train_df, output_dir_train, 'train', 15)
+# save_data(validation_df, output_dir_validation, 'validation', 10)
+# save_data(test_df, output_dir_test, 'test', 10)
